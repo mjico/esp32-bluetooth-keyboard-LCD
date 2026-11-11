@@ -1,0 +1,31 @@
+# ESP-IDF
+build/
+sdkconfig.old
+dependencies.lock
+managed_components/
+
+# Local / tooling
+node_modules/
+.agent-state/
+.agent-serve/
+bot/
+evals/
+.env
+.env.local
+memory/
+package.json
+package-lock.json
+tsconfig.json
+AGENTS.md
+
+# Vendor originals and extracted pictures. Notes live in board_*.md.
+*.pdf
+lcd.jpg
+schematic_pages/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
