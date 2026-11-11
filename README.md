@@ -10,13 +10,16 @@ ESP32-S3 开发板固件：320×240 屏幕当终端，USB 串口和蓝牙键盘�
 
 - 屏幕终端：8×16 ASCII，40 列 × 15 行，满屏向上滚。超长输出自动换行，一次最多 5 行，截断处显示 `[...]`。
 - USB 串口行编辑：本地回显、`>` 提示符、上翻历史。
-- 蓝牙 HID 键盘：逐键回显，Enter 才提交。和串口共用同一套命令和 8 条历史。
+- 蓝牙 HID 键盘：逐键回显，Enter 才提交。主键盘标点和小键盘数字、`/ * - + .` 都有映射。和串口共用同一套命令和 8 条历史。Num Lock 打开后小键盘数字才有效。
 - 命令由各模块自己注册。`help` 列出关键字和一行说明。
 - `trace screen` / `trace serial` 两个开关互不影响，分别控制屏幕和串口输出。
 - 板载 KEY1–KEY4：改字色、开机画面、短按回连、长按发现、串口输出开关。
 - 开机画面有两张 ASCII 画，上电和 `splash` / KEY4 时随机选一张，输出走 `trace`。
 - ST7789 面板句柄只留在 `lcd_text`。命令、按键、蓝牙不再传递 `esp_lcd_panel_handle_t`。
 - 一条 I2C 总线同时服务背光、按键和 5 路扩展座。`i2c` 命令可以扫描、读寄存器、写寄存器。
+- 扩展座上的超声波（`0x77`）读厘米，并可设常亮或呼吸灯。
+- 扩展座上的点阵 `matrix-iic_v2.0`（`0x4C`）显示图像、单字符和键盘回显。回显默认关。
+- `font 5` / `font 6` 切换整机字宽。LCD 和点阵用同一套字，切换后屏幕已有文字会重画。
 
 ## 按键
 
@@ -50,6 +53,18 @@ ESP32-S3 开发板固件：320×240 屏幕当终端，USB 串口和蓝牙键盘�
 | `i2c` 或 `i2c scan` | 扫描 0x08–0x77，列出有应答的地址 |
 | `i2c read <addr> <reg> [n]` | 读寄存器，n 默认 1，最多 16。地址和字节可用十进制或 `0x` |
 | `i2c write <addr> <reg> <bytes...>` | 写寄存器 |
+| `sonar` | 读距离，打印 `u.u cm`。原始值单位是 0.1 cm |
+| `sonar color <r1 g1 b1 r2 g2 b2>` | 常亮。两组 RGB，每字节 0–255 |
+| `sonar breath <r1 g1 b1 r2 g2 b2>` | 呼吸灯周期，6 个字节 |
+| `font` | 打印当前字宽，默认 5 |
+| `font 5` / `font 6` | 换成 5 像素或 6 像素宽的 8×16 字，并重画 LCD |
+| `matrix key` | 打印键盘回显开关。`matrix key 1` 打开，`0` 关闭。默认关 |
+| `matrix bright <88-8F>` | 点阵亮度 |
+| `matrix clear` | 清屏 |
+| `matrix image <1\|2\|both> <name> [1-4]` | 显示命名图像。名字：smile sad heart up box cross check fill。方向 1 正向，2 顺时针 90°，3 为 180°，4 顺时针 270° |
+| `matrix char <c>` | 两块 8×8 拼一个字符。上 8 行在左屏，下 8 行在右屏，再右移 1 像素 |
+| `matrix raw <16 bytes>` | 直接写静态帧 |
+| `matrix scroll <bytes>` | 滚动。协议没有方向 |
 
 默认屏幕输出开、串口输出关。两个都关掉之前，状态行会先打出来。
 
@@ -60,7 +75,9 @@ ESP32-S3 开发板固件：320×240 屏幕当终端，USB 串口和蓝牙键盘�
 | 屏 ST7789，横屏 320×240 | SPI：MOSI GPIO47，SCLK GPIO21，CS GPIO2，DC GPIO3。复位走板级 RST，软件复位 |
 | 背光 | XL9555 IO1_6 拉高，经三极管点亮 |
 | 按键 KEY1–KEY4 | XL9555 IO0_4–IO0_7，按下为低 |
-| I2C | 先试 GPIO4/5，再试 GPIO38/48。XL9555 常见地址 0x20。5 个扩展座和背光、按键是同一条总线 |
+| I2C | 先试 GPIO4/5，再试 GPIO38/48。找到 XL9555（常见 0x20）后只保留那一路。本板是 GPIO38/48，5 个扩展座、背光、按键在这一路。GPIO4/5 上的触摸、音频和 EEPROM 当前固件没有保持打开 |
+| 超声波 | 扩展座，地址 `0x77`。先读寄存器 1，再读寄存器 0 |
+| 点阵 | 扩展座，地址 `0x4C`。亮度寄存器 `0x00`，静态画面 `0x01`（16 字节），滚动 `0x10` |
 | 烧录和调试口 | 原生 USB（USB Serial/JTAG）。本机端口是 **COM8** |
 | 另一路 USB | CH340。只能当普通串口，不能用来下载 |
 
@@ -118,7 +135,11 @@ main/trace.c               屏幕/串口两个输出开关
 main/button.*              按键掩码、短按、长按、选择会话
 main/bluetooth.c           HID 扫描、配对、回连、键盘行
 main/i2c.*                 共享 I2C 和 i2c 命令
-main/font8x16.inc          ASCII 8×16 字模
+main/sonar.*               超声波，地址 0x77
+main/matrix.*              点阵，地址 0x4C
+main/font.c                5/6 像素字宽，font 命令
+main/font8x16.inc          原 8×16 字模，最宽约 5 像素
+main/font8x16_w6.inc       6 像素宽字模
 sdkconfig.defaults         需要强制打开的 Kconfig
 .cursor/rules/             Cursor 工程规则，例如烧录另开 agent
 ```

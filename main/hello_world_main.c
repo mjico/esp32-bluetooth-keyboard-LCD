@@ -6,7 +6,10 @@
 #include "button.h"
 #include "command_interpreter.h"
 #include "debug_port.h"
+#include "font.h"
 #include "i2c.h"
+#include "sonar.h"
+#include "matrix.h"
 #include "lcd_text.h"
 #include "trace.h"
 #include "freertos/FreeRTOS.h"
@@ -63,10 +66,13 @@ static void on_debug_line(const char *line, void *ctx)
 void app_main(void)
 {
     command_init();
+    font_register_commands();
     lcd_text_register_commands();
     trace_register_commands();
     bluetooth_register_commands();
     i2c_register_commands();
+    sonar_register_commands();
+    matrix_register_commands();
 
     trace_printf("reset reason %d", (int)esp_reset_reason());
     /* Soft reset during RF calibration leaves the modem power domain half-on. */

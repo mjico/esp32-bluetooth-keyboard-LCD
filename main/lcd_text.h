@@ -36,6 +36,9 @@ void lcd_text_dismiss_draft(void);
 /* Change glyph color and redraw the rows already on screen. color is RGB565. */
 esp_err_t lcd_text_set_fg_color(uint16_t color);
 
+/* Redraw the rows already stored, using the current font. */
+void lcd_text_redraw(void);
+
 /* Draw the boot picture, one row every 500 ms, through trace. */
 esp_err_t lcd_text_show_splash(void);
 

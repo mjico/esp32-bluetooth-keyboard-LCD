@@ -22,6 +22,7 @@
 #include "command_history.h"
 #include "command_interpreter.h"
 #include "lcd_text.h"
+#include "matrix.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "freertos/queue.h"
@@ -388,6 +389,55 @@ static char hid_to_ascii(uint8_t key, uint8_t mods)
     if (key == 0x2e) {
         return shift ? '+' : '=';
     }
+    if (key == 0x2f) {
+        return shift ? '{' : '[';
+    }
+    if (key == 0x30) {
+        return shift ? '}' : ']';
+    }
+    if (key == 0x31) {
+        return shift ? '|' : '\\';
+    }
+    if (key == 0x33) {
+        return shift ? ':' : ';';
+    }
+    if (key == 0x34) {
+        return shift ? '"' : '\'';
+    }
+    if (key == 0x35) {
+        return shift ? '~' : '`';
+    }
+    if (key == 0x36) {
+        return shift ? '<' : ',';
+    }
+    if (key == 0x37) {
+        return shift ? '>' : '.';
+    }
+    if (key == 0x38) {
+        return shift ? '?' : '/';
+    }
+    /* Keypad: / * - + 1..9 0 . */
+    if (key == 0x54) {
+        return '/';
+    }
+    if (key == 0x55) {
+        return '*';
+    }
+    if (key == 0x56) {
+        return '-';
+    }
+    if (key == 0x57) {
+        return '+';
+    }
+    if (key >= 0x59 && key <= 0x61) {
+        return (char)('1' + (key - 0x59));
+    }
+    if (key == 0x62) {
+        return '0';
+    }
+    if (key == 0x63) {
+        return '.';
+    }
     return 0;
 }
 
@@ -523,6 +573,7 @@ static void show_keys(const uint8_t *data, uint16_t length)
         } else if (ch != 0 && key_len < KEY_LINE_MAX) {
             key_line[key_len++] = ch;
             dirty = true;
+            matrix_on_key(ch);
         }
     }
 

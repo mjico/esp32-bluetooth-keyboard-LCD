@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "command_interpreter.h"
+#include "font.h"
 #include "lcd_text.h"
 #include "trace.h"
 
@@ -12,7 +13,6 @@
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_vendor.h"
-#include "font8x16.inc"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -60,10 +60,7 @@ static void copy_line(char *dst, const char *text)
 
 static void draw_glyph(uint16_t *band, int column, char ch)
 {
-    const uint8_t *glyph = font8x16[0];
-    if (ch >= 32 && ch <= 126) {
-        glyph = font8x16[ch - 32];
-    }
+    const uint8_t *glyph = font_glyph(ch);
 
     for (int py = 0; py < LCD_TEXT_CHAR_H; py++) {
         uint8_t bits = glyph[py];
@@ -199,6 +196,21 @@ esp_err_t lcd_text_set_fg_color(uint16_t color)
     }
     lcd_give();
     return err;
+}
+
+void lcd_text_redraw(void)
+{
+    lcd_take();
+    if (lcd_panel == NULL) {
+        lcd_give();
+        return;
+    }
+    for (int row = 0; row < LCD_TEXT_ROWS; row++) {
+        if (lcd_text_write_row_unlocked(row, screen[row]) != ESP_OK) {
+            break;
+        }
+    }
+    lcd_give();
 }
 
 void lcd_text_set_screen_lines(int screen_line)
