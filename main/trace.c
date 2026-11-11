@@ -14,7 +14,6 @@
 #define TRACE_LINE_MAX 5
 static const char trace_mark[] = "[...]";
 
-static esp_lcd_panel_handle_t trace_panel;
 static bool trace_screen_on = true;
 static bool trace_serial_on = false;
 static SemaphoreHandle_t trace_mu;
@@ -34,13 +33,6 @@ static void trace_unlock(void)
     if (trace_mu != NULL) {
         xSemaphoreGive(trace_mu);
     }
-}
-
-void trace_bind(esp_lcd_panel_handle_t panel)
-{
-    trace_lock();
-    trace_panel = panel;
-    trace_unlock();
 }
 
 void trace_set_screen(bool on)
@@ -92,7 +84,7 @@ static void trace_screen(const char *text)
     }
     length = (int)strlen(text);
     if (length == 0) {
-        lcd_text_append_line(trace_panel, "");
+        lcd_text_append_line("");
         return;
     }
     for (int row = 0; row < TRACE_LINE_MAX && offset < length; row++) {
@@ -114,7 +106,7 @@ static void trace_screen(const char *text)
             memcpy(chunk + at, text + offset, (size_t)room);
             memcpy(chunk + at + room, trace_mark, (size_t)mark);
             chunk[at + room + mark] = '\0';
-            lcd_text_append_line(trace_panel, chunk);
+            lcd_text_append_line(chunk);
             return;
         }
         if (room > length - offset) {
@@ -122,7 +114,7 @@ static void trace_screen(const char *text)
         }
         memcpy(chunk + at, text + offset, (size_t)room);
         chunk[at + room] = '\0';
-        lcd_text_append_line(trace_panel, chunk);
+        lcd_text_append_line(chunk);
         offset += room;
     }
 }
@@ -130,7 +122,7 @@ static void trace_screen(const char *text)
 void trace_print_screen(const char *text)
 {
     trace_lock();
-    if (trace_screen_on && trace_panel != NULL) {
+    if (trace_screen_on && lcd_text_ready()) {
         trace_screen(text);
     }
     trace_unlock();
@@ -140,13 +132,11 @@ void trace_print(const char *text)
 {
     bool screen;
     bool serial;
-    esp_lcd_panel_handle_t panel;
 
     trace_lock();
     screen = trace_screen_on;
     serial = trace_serial_on;
-    panel = trace_panel;
-    if (panel == NULL) {
+    if (!lcd_text_ready()) {
         trace_serial(text);
         trace_unlock();
         return;
@@ -194,15 +184,13 @@ static void show_switch(const char *name, bool on)
     trace_printf("trace %s %d", name, on ? 1 : 0);
 }
 
-static void cmd_trace(esp_lcd_panel_handle_t panel, int argc, char **argv)
+static void cmd_trace(int argc, char **argv)
 {
     bool screen = trace_screen_enabled();
     bool serial = trace_serial_enabled();
     const char *name = NULL;
     bool next;
     bool is_screen;
-
-    (void)panel;
     if (argc < 2) {
         show_switch("screen", screen);
         show_switch("serial", serial);

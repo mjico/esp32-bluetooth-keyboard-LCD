@@ -430,9 +430,8 @@ static void cmd_i2c_write(int argc, char **argv)
     trace_print(line);
 }
 
-static void cmd_i2c(esp_lcd_panel_handle_t panel, int argc, char **argv)
+static void cmd_i2c(int argc, char **argv)
 {
-    (void)panel;
     if (argc < 2 || same_word(argv[1], "scan")) {
         cmd_i2c_scan();
         return;

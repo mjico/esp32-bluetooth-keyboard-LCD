@@ -6,7 +6,12 @@
 #include "lcd_text.h"
 #include "trace.h"
 
+#include "esp_random.h"
+#include "driver/gpio.h"
+#include "driver/spi_master.h"
 #include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_panel_vendor.h"
 #include "font8x16.inc"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -20,6 +25,7 @@ static char screen[LCD_TEXT_ROWS][LCD_TEXT_COLS + 1];
 static int screen_lines;
 static bool draft_on;
 static int draft_row;
+static esp_lcd_panel_handle_t lcd_panel;
 static esp_lcd_panel_io_handle_t panel_io;
 static SemaphoreHandle_t lcd_mu;
 
@@ -37,7 +43,7 @@ static void lcd_give(void)
     }
 }
 
-static esp_err_t lcd_text_write_row_unlocked(esp_lcd_panel_handle_t panel, int row, const char *text);
+static esp_err_t lcd_text_write_row_unlocked(int row, const char *text);
 
 static void copy_line(char *dst, const char *text)
 {
@@ -68,7 +74,7 @@ static void draw_glyph(uint16_t *band, int column, char ch)
     }
 }
 
-esp_err_t lcd_text_init(esp_lcd_panel_io_handle_t io)
+static esp_err_t lcd_text_init(esp_lcd_panel_io_handle_t io)
 {
     panel_io = io;
     if (lcd_mu == NULL) {
@@ -80,19 +86,80 @@ esp_err_t lcd_text_init(esp_lcd_panel_io_handle_t io)
     return ESP_OK;
 }
 
-esp_err_t lcd_text_write_row(esp_lcd_panel_handle_t panel, int row, const char *text)
+bool lcd_text_ready(void)
+{
+    return lcd_panel != NULL;
+}
+
+esp_err_t lcd_text_start(void)
+{
+    spi_bus_config_t buscfg = {
+        .sclk_io_num = 21,
+        .mosi_io_num = 47,
+        .miso_io_num = -1,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = LCD_TEXT_WIDTH * LCD_TEXT_CHAR_H * (int)sizeof(uint16_t),
+    };
+    esp_err_t err = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        return err;
+    }
+
+    esp_lcd_panel_io_handle_t io = NULL;
+    esp_lcd_panel_io_spi_config_t io_config = {
+        .dc_gpio_num = 3,
+        .cs_gpio_num = 2,
+        .pclk_hz = 20 * 1000 * 1000,
+        .lcd_cmd_bits = 8,
+        .lcd_param_bits = 8,
+        .spi_mode = 0,
+        .trans_queue_depth = 10,
+    };
+    err = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI2_HOST, &io_config, &io);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = lcd_text_init(io);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    esp_lcd_panel_handle_t panel = NULL;
+    esp_lcd_panel_dev_config_t panel_config = {
+        .reset_gpio_num = GPIO_NUM_NC,
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+        .data_endian = LCD_RGB_DATA_ENDIAN_LITTLE,
+        .bits_per_pixel = 16,
+    };
+    err = esp_lcd_new_panel_st7789(io, &panel_config, &panel);
+    if (err != ESP_OK) {
+        return err;
+    }
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(panel));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(panel));
+    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel, true, false));
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
+    trace_printf("ST7789 ready, %dx%d", LCD_TEXT_WIDTH, LCD_TEXT_HEIGHT);
+    lcd_panel = panel;
+    return ESP_OK;
+}
+
+esp_err_t lcd_text_write_row(int row, const char *text)
 {
     lcd_take();
-    esp_err_t err = lcd_text_write_row_unlocked(panel, row, text);
+    esp_err_t err = lcd_text_write_row_unlocked(row, text);
     lcd_give();
     return err;
 }
 
-static esp_err_t lcd_text_write_row_unlocked(esp_lcd_panel_handle_t panel, int row, const char *text)
+static esp_err_t lcd_text_write_row_unlocked(int row, const char *text)
 {
     static uint16_t band[LCD_TEXT_WIDTH * LCD_TEXT_CHAR_H];
 
-    if (panel == NULL || row < 0 || row >= LCD_TEXT_ROWS) {
+    if (lcd_panel == NULL || row < 0 || row >= LCD_TEXT_ROWS) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -107,7 +174,7 @@ static esp_err_t lcd_text_write_row_unlocked(esp_lcd_panel_handle_t panel, int r
     }
 
     int y = row * LCD_TEXT_CHAR_H;
-    esp_err_t err = esp_lcd_panel_draw_bitmap(panel, 0, y, LCD_TEXT_WIDTH, y + LCD_TEXT_CHAR_H, band);
+    esp_err_t err = esp_lcd_panel_draw_bitmap(lcd_panel, 0, y, LCD_TEXT_WIDTH, y + LCD_TEXT_CHAR_H, band);
     if (err != ESP_OK || panel_io == NULL) {
         return err;
     }
@@ -115,17 +182,17 @@ static esp_err_t lcd_text_write_row_unlocked(esp_lcd_panel_handle_t panel, int r
     return esp_lcd_panel_io_tx_param(panel_io, 0x00, NULL, 0);
 }
 
-esp_err_t lcd_text_set_fg_color(esp_lcd_panel_handle_t panel, uint16_t color)
+esp_err_t lcd_text_set_fg_color(uint16_t color)
 {
     lcd_take();
     color_fg = color;
-    if (panel == NULL) {
+    if (lcd_panel == NULL) {
         lcd_give();
         return ESP_ERR_INVALID_ARG;
     }
     esp_err_t err = ESP_OK;
     for (int row = 0; row < LCD_TEXT_ROWS; row++) {
-        err = lcd_text_write_row_unlocked(panel, row, screen[row]);
+        err = lcd_text_write_row_unlocked(row, screen[row]);
         if (err != ESP_OK) {
             break;
         }
@@ -148,11 +215,11 @@ void lcd_text_set_screen_lines(int screen_line)
     lcd_give();
 }
 
-static esp_err_t append_line_unlocked(esp_lcd_panel_handle_t panel, const char *text)
+static esp_err_t append_line_unlocked(const char *text)
 {
     esp_err_t err = ESP_OK;
     if (screen_lines < LCD_TEXT_ROWS) {
-        err = lcd_text_write_row_unlocked(panel, screen_lines, text);
+        err = lcd_text_write_row_unlocked(screen_lines, text);
         if (err == ESP_OK) {
             screen_lines++;
         }
@@ -162,7 +229,7 @@ static esp_err_t append_line_unlocked(esp_lcd_panel_handle_t panel, const char *
     memmove(screen[0], screen[1], (LCD_TEXT_ROWS - 1) * (LCD_TEXT_COLS + 1));
     copy_line(screen[LCD_TEXT_ROWS - 1], text);
     for (int row = 0; row < LCD_TEXT_ROWS; row++) {
-        err = lcd_text_write_row_unlocked(panel, row, screen[row]);
+        err = lcd_text_write_row_unlocked(row, screen[row]);
         if (err != ESP_OK) {
             break;
         }
@@ -170,14 +237,14 @@ static esp_err_t append_line_unlocked(esp_lcd_panel_handle_t panel, const char *
     return err;
 }
 
-static esp_err_t set_draft_unlocked(esp_lcd_panel_handle_t panel, const char *text)
+static esp_err_t set_draft_unlocked(const char *text)
 {
     if (!draft_on) {
         if (screen_lines >= LCD_TEXT_ROWS) {
             memmove(screen[0], screen[1], (LCD_TEXT_ROWS - 1) * (LCD_TEXT_COLS + 1));
             screen_lines = LCD_TEXT_ROWS - 1;
             for (int row = 0; row < LCD_TEXT_ROWS - 1; row++) {
-                esp_err_t err = lcd_text_write_row_unlocked(panel, row, screen[row]);
+                esp_err_t err = lcd_text_write_row_unlocked(row, screen[row]);
                 if (err != ESP_OK) {
                     return err;
                 }
@@ -186,16 +253,16 @@ static esp_err_t set_draft_unlocked(esp_lcd_panel_handle_t panel, const char *te
         draft_row = screen_lines;
         draft_on = true;
     }
-    return lcd_text_write_row_unlocked(panel, draft_row, text);
+    return lcd_text_write_row_unlocked(draft_row, text);
 }
 
-esp_err_t lcd_text_set_draft(esp_lcd_panel_handle_t panel, const char *text)
+esp_err_t lcd_text_set_draft(const char *text)
 {
-    if (panel == NULL) {
+    if (lcd_panel == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
     lcd_take();
-    esp_err_t err = set_draft_unlocked(panel, text);
+    esp_err_t err = set_draft_unlocked(text);
     lcd_give();
     return err;
 }
@@ -207,12 +274,12 @@ void lcd_text_dismiss_draft(void)
     lcd_give();
 }
 
-esp_err_t lcd_text_append_line(esp_lcd_panel_handle_t panel, const char *text)
+esp_err_t lcd_text_append_line(const char *text)
 {
     char saved[LCD_TEXT_COLS + 1];
     bool restore = false;
 
-    if (panel == NULL) {
+    if (lcd_panel == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -222,25 +289,26 @@ esp_err_t lcd_text_append_line(esp_lcd_panel_handle_t panel, const char *text)
         draft_on = false;
         restore = true;
     }
-    esp_err_t err = append_line_unlocked(panel, text);
+    esp_err_t err = append_line_unlocked(text);
     if (restore && err == ESP_OK) {
-        err = set_draft_unlocked(panel, saved);
+        err = set_draft_unlocked(saved);
     }
     lcd_give();
     return err;
 }
 
-esp_err_t lcd_text_show_splash(esp_lcd_panel_handle_t panel)
+esp_err_t lcd_text_show_splash(void)
 {
     static const char *art[] = {
+		"",
         ".--------------------------------------.",
         "| .----------------------------------. |",
         "| |                                  | |",
         "| |             Hello World!         | |",
         "| |                                  | |",
-        "| |     /\\_/\\                        | |",
-        "| |    ( o.o )  < Meow!              | |",
-        "| |     > ^ <                        | |",
+        "| |    /\\_/\\                         | |",
+        "| |   ( o.o )  <Meow System Lunched! | |",
+        "| |    > ^ <                         | |",
         "| |                                  | |",
         "| |           Debug Port is ready!   | |",
         "| \\__________________________________/ |",
@@ -249,32 +317,35 @@ esp_err_t lcd_text_show_splash(esp_lcd_panel_handle_t panel)
         "              ||________||              ",
         "             /____________\\             ",
     };
+    static const char *art2[] = {
+        "",
+        ".--------------------------------------.",
+        "| .----------------------------------. |",
+        "| |                                  | |",
+        "| |             Hello World!         | |",
+        "| |                                  | |",
+        "| |         <Meow System Lunched!    | |",
+        "| |         /)                       | |",
+        "| | /\\___/\\((                        | |",
+        "| | \\`@_@'/ ))                       | |",
+        "| | {_:Y:.}//     Fun is ready!      | |",
+        "| \\_{_}~{_}__________________________/ |",
+        "\\______________________________________/",
+        "              ||        ||              ",
+        "              ||________||              ",
+        "             /____________\\             ",
+    };
+    static const char *const *pictures[] = { art, art2 };
+    static const size_t picture_rows[] = {
+        sizeof(art) / sizeof(art[0]),
+        sizeof(art2) / sizeof(art2[0]),
+    };
+    size_t which = (size_t)(esp_random() % 2);
 
-    if (panel == NULL || sizeof(art) / sizeof(art[0]) != LCD_TEXT_ROWS) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    lcd_take();
-    draft_on = false;
-    for (int row = 0; row < LCD_TEXT_ROWS; row++) {
-        esp_err_t err = lcd_text_write_row_unlocked(panel, row, "");
-        if (err != ESP_OK) {
-            lcd_give();
-            return err;
-        }
-    }
-    screen_lines = 0;
-
-    for (int row = 0; row < LCD_TEXT_ROWS; row++) {
-        esp_err_t err = lcd_text_write_row_unlocked(panel, row, art[row]);
-        if (err != ESP_OK) {
-            lcd_give();
-            return err;
-        }
+    for (size_t row = 0; row < picture_rows[which]; row++) {
+        trace_print(pictures[which][row]);
         vTaskDelay(pdMS_TO_TICKS(500));
     }
-    screen_lines = LCD_TEXT_ROWS;
-    lcd_give();
     return ESP_OK;
 }
 
@@ -358,21 +429,21 @@ static bool parse_color(const char *text, uint16_t *color)
     return false;
 }
 
-static void cmd_color(esp_lcd_panel_handle_t panel, int argc, char **argv)
+static void cmd_color(int argc, char **argv)
 {
     uint16_t color = 0;
     if (argc < 2 || !parse_color(argv[1], &color)) {
         trace_print("color <name|hex>");
         return;
     }
-    lcd_text_set_fg_color(panel, color);
+    lcd_text_set_fg_color(color);
 }
 
-static void cmd_splash(esp_lcd_panel_handle_t panel, int argc, char **argv)
+static void cmd_splash(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
-    lcd_text_show_splash(panel);
+    lcd_text_show_splash();
 }
 
 void lcd_text_register_commands(void)

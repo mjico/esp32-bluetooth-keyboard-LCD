@@ -47,7 +47,6 @@ typedef struct {
     char name[DEV_NAME_MAX];
 } peer_nvs_t;
 
-static esp_lcd_panel_handle_t panel;
 static bool stack_ready;
 static bool params_ready;
 static bool want_scan;
@@ -104,7 +103,7 @@ static void key_cmd_task(void *arg)
         /* The draft row is the line just typed. Commit it, then echo whatever is being typed now. */
         lcd_text_dismiss_draft();
         trace_print(prompted);
-        command_line_execute(panel, line);
+        command_line_execute(line);
         paint_key_draft();
     }
 }
@@ -442,9 +441,7 @@ static void paint_key_draft(void)
     shown[0] = '>';
     memcpy(shown + 1, key_line + start, (size_t)n);
     shown[n + 1] = '\0';
-    if (panel != NULL) {
-        lcd_text_set_draft(panel, shown);
-    }
+    lcd_text_set_draft(shown);
 }
 
 static void recall_key_line(void)
@@ -742,12 +739,12 @@ static esp_err_t hid_host_init(void)
     return ESP_OK;
 }
 
-static void draw_device_page(esp_lcd_panel_handle_t lcd, const button_choice_t *choice, void *ctx)
+static void draw_device_page(const button_choice_t *choice, void *ctx)
 {
     (void)ctx;
     char line[LCD_TEXT_COLS + 1];
     snprintf(line, sizeof(line), "KEY1-3 pick  page %d/%d", choice->page + 1, choice->page_count);
-    lcd_text_write_row(lcd, 0, line);
+    lcd_text_write_row(0, line);
     for (int slot = 0; slot < BUTTON_CHOICE_SLOTS; slot++) {
         int index = choice->page * BUTTON_CHOICE_SLOTS + slot;
         if (index >= 0 && index < choice->item_count && index < MAX_DEVICES) {
@@ -755,26 +752,26 @@ static void draw_device_page(esp_lcd_panel_handle_t lcd, const button_choice_t *
         } else {
             line[0] = '\0';
         }
-        lcd_text_write_row(lcd, 1 + slot, line);
+        lcd_text_write_row(1 + slot, line);
     }
-    lcd_text_write_row(lcd, 4, "KEY4 next page");
+    lcd_text_write_row(4, "KEY4 next page");
     for (int row = 5; row < LCD_TEXT_ROWS; row++) {
-        lcd_text_write_row(lcd, row, "");
+        lcd_text_write_row(row, "");
     }
     lcd_text_set_screen_lines(5);
 }
 
-static void pick_device(esp_lcd_panel_handle_t lcd, const button_choice_t *choice, void *ctx)
+static void pick_device(const button_choice_t *choice, void *ctx)
 {
     (void)ctx;
     if (choice->index >= 0) {
-        bluetooth_connect(lcd, choice->index + 1);
+        bluetooth_connect(choice->index + 1);
     }
 }
 
 static void connect_task(void *arg)
 {
-    bluetooth_connect(panel, (int)(intptr_t)arg);
+    bluetooth_connect((int)(intptr_t)arg);
     vTaskDelete(NULL);
 }
 
@@ -980,7 +977,7 @@ static bool try_direct_reconnect(void)
     devices[0].addr_type = addr_type;
     memcpy(devices[0].name, name, sizeof(devices[0].name));
     devices[0].name[sizeof(devices[0].name) - 1] = '\0';
-    return bluetooth_connect(panel, 1) == ESP_OK;
+    return bluetooth_connect(1) == ESP_OK;
 }
 
 static void run_scan(void)
@@ -1035,13 +1032,8 @@ static void scan_task_fn(void *arg)
     }
 }
 
-static esp_err_t start_scan(esp_lcd_panel_handle_t lcd, bool discover)
+static esp_err_t start_scan(bool discover)
 {
-    if (lcd == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    panel = lcd;
-
     button_choice_stop();
     if (scanning) {
         trace_print("scanning");
@@ -1060,14 +1052,14 @@ static esp_err_t start_scan(esp_lcd_panel_handle_t lcd, bool discover)
     return ESP_OK;
 }
 
-esp_err_t bluetooth_reconnect(esp_lcd_panel_handle_t lcd)
+esp_err_t bluetooth_reconnect(void)
 {
-    return start_scan(lcd, false);
+    return start_scan(false);
 }
 
-esp_err_t bluetooth_discover(esp_lcd_panel_handle_t lcd)
+esp_err_t bluetooth_discover(void)
 {
-    return start_scan(lcd, true);
+    return start_scan(true);
 }
 
 static bool link_is_up(void)
@@ -1122,12 +1114,8 @@ static bool drop_link(void)
     return true;
 }
 
-esp_err_t bluetooth_connect(esp_lcd_panel_handle_t lcd, int index)
+esp_err_t bluetooth_connect(int index)
 {
-    if (lcd == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    panel = lcd;
     button_choice_stop();
 
     if (!stack_ready) {
@@ -1191,7 +1179,7 @@ esp_err_t bluetooth_connect(esp_lcd_panel_handle_t lcd, int index)
     return ESP_OK;
 }
 
-static void cmd_connect(esp_lcd_panel_handle_t panel, int argc, char **argv)
+static void cmd_connect(int argc, char **argv)
 {
     if (argc < 2) {
         trace_print("connect <n>");
@@ -1205,7 +1193,7 @@ static void cmd_connect(esp_lcd_panel_handle_t panel, int argc, char **argv)
         }
         index = index * 10 + (*p - '0');
     }
-    bluetooth_connect(panel, index);
+    bluetooth_connect(index);
 }
 
 void bluetooth_register_commands(void)

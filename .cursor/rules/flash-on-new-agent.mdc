@@ -1,0 +1,15 @@
+---
+description: 烧录固件时另开 agent，串口被占则使用释放串口技能
+alwaysApply: true
+---
+
+# 烧录交给新的 agent
+
+换版本、`idf.py flash`、向板子上传固件时，当前对话不要自己烧录。另开一个 agent 做这件事。
+
+那个 agent 负责：
+
+- 在 `D:\AI_Proj\hello_world` 里激活 ESP-IDF 5.4.4 后执行 `idf.py -p COM8 build flash`
+- 只用原生 USB 的 COM8。不要烧 CH340，不要留下 `idf.py monitor`
+- 打开 COM8 失败、`PermissionError 13`、拒绝访问、端口被占时，先读并执行 `C:\Users\mjico\.cursor\skills\release-serial-port\SKILL.md`
+- 没有 `consent.json` 里的永久确认时，先列出占用进程，再让用户选：一次性确认、永久确认、拒绝。用户回答之前不要结束任何进程

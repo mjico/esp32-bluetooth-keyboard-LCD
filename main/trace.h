@@ -2,14 +2,9 @@
 
 #include <stdbool.h>
 
-#include "esp_lcd_panel_ops.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* Remember the panel used when the screen switch is on. */
-void trace_bind(esp_lcd_panel_handle_t panel);
 
 void trace_set_screen(bool on);
 void trace_set_serial(bool on);

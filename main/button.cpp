@@ -19,7 +19,7 @@ static const int kChoiceYield = 2;
 static portMUX_TYPE choice_mux = portMUX_INITIALIZER_UNLOCKED;
 
 Button::Button()
-    : addr_(0), panel_(NULL), pressed_(0), have_sample_(false), binding_count_(0), long_count_(0), choice_()
+    : addr_(0), pressed_(0), have_sample_(false), binding_count_(0), long_count_(0), choice_()
 {
     memset(bindings_, 0, sizeof(bindings_));
     memset(long_bindings_, 0, sizeof(long_bindings_));
@@ -77,12 +77,8 @@ Button::LongBinding *Button::find_long(uint8_t mask)
     return NULL;
 }
 
-esp_err_t Button::start(uint8_t addr, esp_lcd_panel_handle_t panel)
+esp_err_t Button::start(uint8_t addr)
 {
-    if (panel == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
     uint8_t dir = 0xFF;
     esp_err_t err = i2c_reg_read(addr, kRegConfig0, &dir, 1);
     if (err == ESP_OK) {
@@ -94,7 +90,6 @@ esp_err_t Button::start(uint8_t addr, esp_lcd_panel_handle_t panel)
     }
 
     addr_ = addr;
-    panel_ = panel;
     if (xTaskCreate(task_entry, "button", 8192, this, 4, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
@@ -119,7 +114,7 @@ bool Button::choice_start(int item_count, button_choice_fn on_pick, button_choic
     portEXIT_CRITICAL(&choice_mux);
 
     if (on_page != NULL) {
-        on_page(panel_, &choice, ctx);
+        on_page(&choice, ctx);
     }
     return true;
 }
@@ -192,7 +187,7 @@ int Button::handle_choice(uint8_t pressed_mask)
         }
         portEXIT_CRITICAL(&choice_mux);
         if (call_pick && on_pick != NULL) {
-            on_pick(panel_, &choice, ctx);
+            on_pick(&choice, ctx);
         }
         return kChoiceHandled;
     }
@@ -208,7 +203,7 @@ int Button::handle_choice(uint8_t pressed_mask)
         call_page = true;
         portEXIT_CRITICAL(&choice_mux);
         if (call_page && on_page != NULL) {
-            on_page(panel_, &choice, ctx);
+            on_page(&choice, ctx);
         }
         return kChoiceHandled;
     }
@@ -261,7 +256,7 @@ void Button::dispatch(uint8_t pressed_mask)
 {
     for (int i = 0; i < binding_count_; i++) {
         if (bindings_[i].mask == pressed_mask && bindings_[i].action != NULL) {
-            bindings_[i].action(panel_);
+            bindings_[i].action();
             return;
         }
     }
@@ -317,7 +312,7 @@ void Button::run()
                             dispatch(pressed);
                         }
                     } else if (held_long != NULL) {
-                        held_long->action(panel_);
+                        held_long->action();
                     } else {
                         dispatch(pressed);
                     }
@@ -345,9 +340,9 @@ extern "C" esp_err_t button_bind_long(uint8_t mask, button_action_t action, int 
     return buttons().bind_long(mask, action, hold_ms) ? ESP_OK : ESP_ERR_INVALID_ARG;
 }
 
-extern "C" esp_err_t button_start(uint8_t addr, esp_lcd_panel_handle_t panel)
+extern "C" esp_err_t button_start(uint8_t addr)
 {
-    return buttons().start(addr, panel);
+    return buttons().start(addr);
 }
 
 extern "C" esp_err_t button_choice_start(int item_count, button_choice_fn on_pick, button_choice_fn on_page, void *ctx)

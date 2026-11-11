@@ -1,7 +1,8 @@
 #pragma once
 
+#include <stdbool.h>
+
 #include "esp_err.h"
-#include "esp_lcd_panel_ops.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,7 +14,7 @@ extern "C" {
 #define KEY3 (1u << 2)
 #define KEY4 (1u << 3)
 
-typedef void (*button_action_t)(esp_lcd_panel_handle_t panel);
+typedef void (*button_action_t)(void);
 
 /* Register the function that runs when exactly these keys are held. mask 0 is rejected. */
 esp_err_t button_bind(uint8_t mask, button_action_t action);
@@ -23,7 +24,7 @@ esp_err_t button_bind(uint8_t mask, button_action_t action);
 esp_err_t button_bind_long(uint8_t mask, button_action_t action, int hold_ms);
 
 /* Read KEY1..KEY4 from the shared I2C bus. */
-esp_err_t button_start(uint8_t addr, esp_lcd_panel_handle_t panel);
+esp_err_t button_start(uint8_t addr);
 
 /* One page has one slot per select key: KEY1, KEY2, KEY3. KEY4 cycles pages. */
 #define BUTTON_CHOICE_SLOTS 3
@@ -36,7 +37,7 @@ typedef struct {
     int item_count;
 } button_choice_t;
 
-typedef void (*button_choice_fn)(esp_lcd_panel_handle_t panel, const button_choice_t *choice, void *ctx);
+typedef void (*button_choice_fn)(const button_choice_t *choice, void *ctx);
 
 /* Take over KEY1..KEY4 until a slot is chosen or button_choice_stop runs.
  * KEY1..KEY3 report that slot. An empty slot does nothing. KEY4 advances the page and wraps.

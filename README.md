@@ -14,6 +14,8 @@ ESP32-S3 开发板固件：320×240 屏幕当终端，USB 串口和蓝牙键盘�
 - 命令由各模块自己注册。`help` 列出关键字和一行说明。
 - `trace screen` / `trace serial` 两个开关互不影响，分别控制屏幕和串口输出。
 - 板载 KEY1–KEY4：改字色、开机画面、短按回连、长按发现、串口输出开关。
+- 开机画面有两张 ASCII 画，上电和 `splash` / KEY4 时随机选一张，输出走 `trace`。
+- ST7789 面板句柄只留在 `lcd_text`。命令、按键、蓝牙不再传递 `esp_lcd_panel_handle_t`。
 - 一条 I2C 总线同时服务背光、按键和 5 路扩展座。`i2c` 命令可以扫描、读寄存器、写寄存器。
 
 ## 按键
@@ -26,7 +28,7 @@ ESP32-S3 开发板固件：320×240 屏幕当终端，USB 串口和蓝牙键盘�
 | KEY2 | 文字改成绿色 |
 | KEY3 短按 | 回连上次的键盘。先直连已保存地址，失败再扫描 |
 | KEY3 长按约 1 秒 | 发现新的 HID 设备，弹出选择 |
-| KEY4 | 重放开机画面 |
+| KEY4 | 重放开机画面（两张里随机一张） |
 | KEY1 + KEY4 | 翻转串口 trace 开关 |
 
 发现或翻页时：KEY1、KEY2、KEY3 选择当前页的设备，KEY4 翻页。
@@ -39,7 +41,7 @@ ESP32-S3 开发板固件：320×240 屏幕当终端，USB 串口和蓝牙键盘�
 | --- | --- |
 | `help` | 列出已注册命令 |
 | `color <name\|hex>` | 改文字颜色。名字：black white red green blue yellow cyan magenta。也接受 RGB565（4 位十六进制）或 RGB888（6 位） |
-| `splash` | 重放开机画面，每行间隔 0.5 秒 |
+| `splash` | 重放开机画面。在两张 ASCII 画里随机选一张，每行间隔 0.5 秒，走 `trace` |
 | `trace` | 打印 screen、serial 两个开关的当前值 |
 | `trace screen` / `trace serial` | 只看这一路是 0 还是 1 |
 | `trace screen 1` / `trace screen 0` | 打开或关闭屏幕输出 |
@@ -107,8 +109,8 @@ idf.py -p COM8 build flash
 ## 目录
 
 ```
-main/hello_world_main.c    上电：射频域复位、I2C、背光、屏、命令注册、按键
-main/lcd_text.c            字符终端、开机画面、color / splash
+main/hello_world_main.c    上电：射频域复位、I2C、背光、lcd_text_start、命令注册、按键
+main/lcd_text.c            ST7789、字符终端、随机开机画面、color / splash
 main/debug_port.c          USB 串口行编辑
 main/command_interpreter.* 命令注册、help、历史提交
 main/command_history.*     8 条命令历史
@@ -118,6 +120,9 @@ main/bluetooth.c           HID 扫描、配对、回连、键盘行
 main/i2c.*                 共享 I2C 和 i2c 命令
 main/font8x16.inc          ASCII 8×16 字模
 sdkconfig.defaults         需要强制打开的 Kconfig
+.cursor/rules/             Cursor 工程规则，例如烧录另开 agent
 ```
 
 交互是怎么一步步长成现在这样的，写在 [docs/generation.md](docs/generation.md)。
+
+仓库：https://github.com/mjico/esp32-bluetooth-keyboard-LCD

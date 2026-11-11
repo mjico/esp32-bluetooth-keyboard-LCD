@@ -461,11 +461,56 @@ agent 想复杂了。你打断过一次：「你在思考什么，为什么这�
 113. 已经登录 GitHub。工程改名为「ESP32 蓝牙键盘」。
 114. 记得用英文名字，继续。
 115. 做一个 README，写依赖和功能。再写一份生成步骤文档，尽可能详尽地描述和 agent 的交互。
+116. 仓库地址是 `https://github.com/mjico/esp32-bluetooth-keyboard-LCD.git`。用英文名上传，并剔除不必要的文件。
+117. 问为什么删了 `_user_msgs.txt` 和 `_queries.md`。那是写文档时的临时抽取，内容已写入 `docs/generation.md`。
+118. 更新 token 权限后推送。第一次仍 403；权限补齐后 `main` 推上去。
+119. `splash` 没有走 `trace`，串口看不到。先改成逐行 `trace_print_serial`，你要求再简化成直接 `trace_print`。
+120. `esp_lcd_panel_handle_t` 只应出现在 LCD 相关模块。面板句柄收进 `lcd_text`，命令、按键、蓝牙、trace 不再传这个参数。`lcd_text_start()` 负责建屏。
+121. 换版本时另开一个 agent 烧录。COM8 被占就用释放串口技能。写成 `.cursor/rules/flash-on-new-agent.mdc`。
+122. 新增启动画面 `art2`。先检查宽度，再让开机随机选 `art` 或 `art2`。
+123. 多次「重新编译换版本」。固件大约 `0xbce40`。
+124. 更新开发日志，并把代码库上传到 GitHub。
 
 ---
 
-## 12. 当前停在哪
+## 13. README、GitHub 和模块收口
 
-固件功能停在第 11 节第 109 条：`trace` 独立开关、`help`、各模块自己注册命令。这一版已经用 COM8 烧进去过，镜像大约 `0xbcec0` 字节，1 MB 应用分区还剩大约 26%。
+README 和 `docs/generation.md` 是在第 115 条写的。第一次推送只带固件源码、板级 md、`sdkconfig`、`sdkconfig.defaults` 和文档；厂家 PDF、`schematic_pages/`、`lcd.jpg`、`package.json`、Agent SDK 脚手架留在本机。
 
-仓库停在第 114 条：本地 git 有两个提交，CMake 工程名已是 `esp32_bluetooth_keyboard`，GitHub 仓库还没创建，因为登录用的 token 不能建库。建好空仓库 `esp32-bluetooth-keyboard` 之后，加上 `origin` 再 push 即可。
+仓库名是你建的 `esp32-bluetooth-keyboard-LCD`。本机 token 一度没有写权限，补上 Contents 写入后，`main` 推到了：
+
+`https://github.com/mjico/esp32-bluetooth-keyboard-LCD`
+
+`splash` 一开始直接画屏，串口开关打开也看不到。你说函数不用那么复杂，直接调用 `trace`。现在 `lcd_text_show_splash` 只做：选一张画面，每一行 `trace_print`，行与行之间等 0.5 秒。屏幕和串口由 `trace` 的两个开关决定。
+
+你接着收接口：
+
+> `esp_lcd_panel_handle_t` 这个东西，我认为只需在 lcd 相关子模块出现就好了，不需要所有代码都带这个参数。
+
+改完之后：
+
+- `lcd_text_start()` 在 `lcd_text.c` 里建 SPI、ST7789，保存 `lcd_panel`
+- 对外接口不再带 panel：`lcd_text_write_row`、`append_line`、`set_draft`、`set_fg_color`、`show_splash`
+- `command_fn_t` 变成 `(int argc, char **argv)`
+- `button_action_t` 变成 `void (*)(void)`，`button_start(addr)` 不再要 panel
+- `bluetooth_reconnect` / `discover` / `connect` 不再要 panel
+- `trace_bind` 去掉，屏幕是否就绪用 `lcd_text_ready()`
+
+烧录约定也改了。你说每次上传版本另开一个 agent，COM8 被占用就用释放串口的技能。工程规则写在 `.cursor/rules/flash-on-new-agent.mdc`。那个 agent 只负责 `idf.py -p COM8 build flash`；口被占时先跑 `release_com.ps1` 列出占用进程，再让你选一次性确认、永久确认或拒绝。
+
+你加了第二张开机画面 `art2`。检查时发现里面有制表符，字库按一格画，边框对不齐；有一行超过 40 列。改成空格并补齐到 40 列。开机用 `esp_random() % 2` 在 `art` 和 `art2` 里选一张。`splash` 命令和 KEY4 走同一个函数，所以也会随机。
+
+---
+
+## 14. 当前停在哪
+
+固件停在：
+
+- `trace` 独立开关、`help`、各模块自己注册命令
+- 面板句柄只在 `lcd_text`
+- 开机画面 `art` / `art2` 随机
+- `splash` 走 `trace_print`
+
+最近一次烧录镜像大约 `0xbce40` 字节，1 MB 应用分区还剩大约 26%。
+
+远程仓库是 `origin/main`：`https://github.com/mjico/esp32-bluetooth-keyboard-LCD`。本次把开发日志和上述代码改动再推上去。

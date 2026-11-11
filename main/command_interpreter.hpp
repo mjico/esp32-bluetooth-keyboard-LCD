@@ -11,7 +11,7 @@ public:
     SerialCommand();
 
     bool add(const char *name, const char *help, command_fn_t action);
-    bool execute(esp_lcd_panel_handle_t panel, char *line);
+    bool execute(char *line);
     void help(void) const;
 
 private:

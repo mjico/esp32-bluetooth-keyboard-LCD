@@ -27,7 +27,7 @@ bool SerialCommand::add(const char *name, const char *help, command_fn_t action)
     return true;
 }
 
-bool SerialCommand::execute(esp_lcd_panel_handle_t panel, char *line)
+bool SerialCommand::execute(char *line)
 {
     char *argv[kMaxArgs];
     int argc = 0;
@@ -60,7 +60,7 @@ bool SerialCommand::execute(esp_lcd_panel_handle_t panel, char *line)
 
     for (int i = 0; i < count_; i++) {
         if (strcmp(table_[i].name, argv[0]) == 0) {
-            table_[i].action(panel, argc, argv);
+            table_[i].action(argc, argv);
             return true;
         }
     }
@@ -80,9 +80,8 @@ static SerialCommand &commands(void)
     return interpreter;
 }
 
-static void cmd_help(esp_lcd_panel_handle_t panel, int argc, char **argv)
+static void cmd_help(int argc, char **argv)
 {
-    (void)panel;
     (void)argc;
     (void)argv;
     commands().help();
@@ -98,7 +97,7 @@ extern "C" esp_err_t command_register(const char *keyword, const char *help, com
     return commands().add(keyword, help, fn) ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
-extern "C" void command_line_execute(esp_lcd_panel_handle_t panel, const char *line)
+extern "C" void command_line_execute(const char *line)
 {
     char buffer[129];
     size_t length = 0;
@@ -115,7 +114,7 @@ extern "C" void command_line_execute(esp_lcd_panel_handle_t panel, const char *l
         return;
     }
     command_history_add(line);
-    if (!commands().execute(panel, buffer)) {
+    if (!commands().execute(buffer)) {
         trace_print("unknown command");
     }
 }

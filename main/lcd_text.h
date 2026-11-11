@@ -1,8 +1,8 @@
 #pragma once
 
+#include <stdbool.h>
+
 #include "esp_err.h"
-#include "esp_lcd_panel_io.h"
-#include "esp_lcd_panel_ops.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -15,28 +15,29 @@ extern "C" {
 #define LCD_TEXT_COLS    (LCD_TEXT_WIDTH / LCD_TEXT_CHAR_W)
 #define LCD_TEXT_ROWS    (LCD_TEXT_HEIGHT / LCD_TEXT_CHAR_H)
 
-/* Register the panel IO so a row can wait until its pixels have been sent. */
-esp_err_t lcd_text_init(esp_lcd_panel_io_handle_t io);
+/* Bring up the ST7789 and keep the panel inside this module. */
+esp_err_t lcd_text_start(void);
+bool lcd_text_ready(void);
 
 /* Draw one text row. row is 0..14 from the top. Only the first 40 characters are used.
  * Characters past the end of the string are cleared. Other rows are left as they are. */
-esp_err_t lcd_text_write_row(esp_lcd_panel_handle_t panel, int row, const char *text);
+esp_err_t lcd_text_write_row(int row, const char *text);
 
 /* Append one line, like a terminal. The first 15 lines fill rows 0..14.
  * After that, every line scrolls the screen up and is drawn on the last row. */
-esp_err_t lcd_text_append_line(esp_lcd_panel_handle_t panel, const char *text);
+esp_err_t lcd_text_append_line(const char *text);
 void lcd_text_set_screen_lines(int screen_line);
 
 /* Draw the line being edited on the next free row. Later edits rewrite that row.
  * A following append keeps this line under the new text. */
-esp_err_t lcd_text_set_draft(esp_lcd_panel_handle_t panel, const char *text);
+esp_err_t lcd_text_set_draft(const char *text);
 void lcd_text_dismiss_draft(void);
 
 /* Change glyph color and redraw the rows already on screen. color is RGB565. */
-esp_err_t lcd_text_set_fg_color(esp_lcd_panel_handle_t panel, uint16_t color);
+esp_err_t lcd_text_set_fg_color(uint16_t color);
 
-/* Clear the screen, then draw the boot picture one row every 500 ms. */
-esp_err_t lcd_text_show_splash(esp_lcd_panel_handle_t panel);
+/* Draw the boot picture, one row every 500 ms, through trace. */
+esp_err_t lcd_text_show_splash(void);
 
 void lcd_text_register_commands(void);
 
