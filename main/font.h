@@ -13,7 +13,8 @@ const uint8_t *font_glyph(char ch);
 int font_width(void);
 void font_set_width(int width);
 
-void font_register_commands(void);
+/* argv is the text after "system font". */
+void font_command(int argc, char **argv);
 
 #ifdef __cplusplus
 }

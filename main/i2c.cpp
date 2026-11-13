@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "command_interpreter.h"
+#include "config.h"
 #include "esp_err.h"
 #include "lcd_text.h"
 #include "trace.h"
@@ -123,7 +124,7 @@ esp_err_t I2c::start(uint8_t *xl_addr)
     return ESP_ERR_NOT_FOUND;
 }
 
-esp_err_t I2c::backlight_on()
+esp_err_t I2c::backlight_set(bool on)
 {
     if (xl_addr_ == 0) {
         return ESP_ERR_INVALID_STATE;
@@ -133,13 +134,43 @@ esp_err_t I2c::backlight_on()
     esp_err_t err;
     read(xl_addr_, kBlOutput, &out, 1);
     read(xl_addr_, kBlConfig, &dir, 1);
-    out = (uint8_t)(out | (1u << kBlBit));
+    if (on) {
+        out = (uint8_t)(out | (1u << kBlBit));
+    } else {
+        out = (uint8_t)(out & ~(1u << kBlBit));
+    }
     dir = (uint8_t)(dir & ~(1u << kBlBit));
     err = write(xl_addr_, kBlOutput, &out, 1);
     if (err != ESP_OK) {
         return err;
     }
-    return write(xl_addr_, kBlConfig, &dir, 1);
+    err = write(xl_addr_, kBlConfig, &dir, 1);
+    if (err == ESP_OK) {
+        config_set_backlight(on);
+    }
+    return err;
+}
+
+esp_err_t I2c::backlight_get(bool *on)
+{
+    if (on == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (xl_addr_ == 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    uint8_t out = 0;
+    esp_err_t err = read(xl_addr_, kBlOutput, &out, 1);
+    if (err != ESP_OK) {
+        return err;
+    }
+    *on = (out & (1u << kBlBit)) != 0;
+    return ESP_OK;
+}
+
+esp_err_t I2c::backlight_on()
+{
+    return backlight_set(true);
 }
 
 esp_err_t I2c::probe(uint8_t addr)
@@ -248,6 +279,16 @@ extern "C" esp_err_t i2c_port_start(uint8_t *xl_addr)
 extern "C" esp_err_t i2c_backlight_on(void)
 {
     return i2c_port().backlight_on();
+}
+
+extern "C" esp_err_t i2c_backlight_set(bool on)
+{
+    return i2c_port().backlight_set(on);
+}
+
+extern "C" esp_err_t i2c_backlight_get(bool *on)
+{
+    return i2c_port().backlight_get(on);
 }
 
 extern "C" esp_err_t i2c_probe(uint8_t addr)
@@ -434,6 +475,7 @@ static void cmd_i2c(int argc, char **argv)
 {
     if (argc < 2 || same_word(argv[1], "scan")) {
         cmd_i2c_scan();
+        trace_print("i2c scan|read|write");
         return;
     }
     if (same_word(argv[1], "read")) {
@@ -445,6 +487,36 @@ static void cmd_i2c(int argc, char **argv)
         return;
     }
     trace_print("i2c scan|read|write");
+}
+
+static void cmd_backlight(int argc, char **argv)
+{
+    if (argc >= 1) {
+        if ((argv[0][0] != '0' && argv[0][0] != '1') || argv[0][1] != '\0') {
+            trace_print("system backlight [0|1]");
+            return;
+        }
+        esp_err_t err = i2c_backlight_set(argv[0][0] == '1');
+        if (err != ESP_OK) {
+            trace_printf("backlight %s", esp_err_to_name(err));
+            return;
+        }
+    }
+    bool on = false;
+    esp_err_t err = i2c_backlight_get(&on);
+    if (err != ESP_OK) {
+        trace_printf("backlight %s", esp_err_to_name(err));
+        return;
+    }
+    trace_printf("backlight %d", on ? 1 : 0);
+    if (argc < 1) {
+        trace_print("system backlight [0|1]");
+    }
+}
+
+extern "C" void i2c_backlight_command(int argc, char **argv)
+{
+    cmd_backlight(argc, argv);
 }
 
 extern "C" void i2c_register_commands(void)

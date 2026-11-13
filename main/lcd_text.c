@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "command_interpreter.h"
+#include "config.h"
 #include "font.h"
 #include "lcd_text.h"
 #include "trace.h"
@@ -18,10 +19,19 @@
 #include "freertos/task.h"
 
 #define COLOR_BG 0x0000
+#define LCD_PAGE_MIN 2
+#define LCD_PAGE_MAX 10
+#define LCD_PAGE_DEFAULT 3
+#define LCD_HIST_MAX ((LCD_PAGE_MAX - 1) * LCD_TEXT_ROWS)
 
 static uint16_t color_fg = 0xFFFF;
 
 static char screen[LCD_TEXT_ROWS][LCD_TEXT_COLS + 1];
+static char hist[LCD_HIST_MAX][LCD_TEXT_COLS + 1];
+static int hist_count;
+static int hist_head;
+static int page_keep = LCD_PAGE_DEFAULT;
+static int view_page;
 static int screen_lines;
 static bool draft_on;
 static int draft_row;
@@ -44,6 +54,8 @@ static void lcd_give(void)
 }
 
 static esp_err_t lcd_text_write_row_unlocked(int row, const char *text);
+static esp_err_t paint_row_text(int row, const char *text);
+static esp_err_t paint_live(void);
 
 static void copy_line(char *dst, const char *text)
 {
@@ -147,26 +159,73 @@ esp_err_t lcd_text_start(void)
 esp_err_t lcd_text_write_row(int row, const char *text)
 {
     lcd_take();
+    view_page = 0;
     esp_err_t err = lcd_text_write_row_unlocked(row, text);
     lcd_give();
     return err;
 }
 
-static esp_err_t lcd_text_write_row_unlocked(int row, const char *text)
+static int hist_cap(void)
+{
+    return (page_keep - 1) * LCD_TEXT_ROWS;
+}
+
+static int history_pages(void)
+{
+    if (hist_count <= 0) {
+        return 0;
+    }
+    return (hist_count + LCD_TEXT_ROWS - 1) / LCD_TEXT_ROWS;
+}
+
+static char *hist_at(int logical)
+{
+    return hist[(hist_head + logical) % LCD_HIST_MAX];
+}
+
+static void hist_drop_oldest(void)
+{
+    if (hist_count <= 0) {
+        return;
+    }
+    hist_head = (hist_head + 1) % LCD_HIST_MAX;
+    hist_count--;
+}
+
+static void hist_trim(void)
+{
+    int cap = hist_cap();
+    while (hist_count > cap) {
+        hist_drop_oldest();
+    }
+}
+
+static void hist_push(const char *text)
+{
+    int slot;
+
+    hist_trim();
+    if (hist_count >= hist_cap()) {
+        hist_drop_oldest();
+    }
+    slot = (hist_head + hist_count) % LCD_HIST_MAX;
+    copy_line(hist[slot], text);
+    hist_count++;
+}
+
+static esp_err_t paint_row_text(int row, const char *text)
 {
     static uint16_t band[LCD_TEXT_WIDTH * LCD_TEXT_CHAR_H];
+    char local[LCD_TEXT_COLS + 1];
 
     if (lcd_panel == NULL || row < 0 || row >= LCD_TEXT_ROWS) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (text != screen[row]) {
-        copy_line(screen[row], text);
-    }
-    int length = (int)strlen(screen[row]);
-
+    copy_line(local, text);
+    int length = (int)strlen(local);
     for (int column = 0; column < LCD_TEXT_COLS; column++) {
-        char ch = (column < length) ? screen[row][column] : ' ';
+        char ch = (column < length) ? local[column] : ' ';
         draw_glyph(band, column, ch);
     }
 
@@ -179,22 +238,81 @@ static esp_err_t lcd_text_write_row_unlocked(int row, const char *text)
     return esp_lcd_panel_io_tx_param(panel_io, 0x00, NULL, 0);
 }
 
+static esp_err_t paint_live(void)
+{
+    esp_err_t err = ESP_OK;
+    for (int row = 0; row < LCD_TEXT_ROWS; row++) {
+        err = paint_row_text(row, screen[row]);
+        if (err != ESP_OK) {
+            break;
+        }
+    }
+    return err;
+}
+
+static esp_err_t paint_history(int page)
+{
+    int end = hist_count - (page - 1) * LCD_TEXT_ROWS;
+    int begin = end - LCD_TEXT_ROWS;
+    int row = 0;
+    esp_err_t err = ESP_OK;
+
+    if (begin < 0) {
+        begin = 0;
+    }
+    if (end > hist_count) {
+        end = hist_count;
+    }
+    if (end < begin) {
+        end = begin;
+    }
+    for (int i = begin; i < end && row < LCD_TEXT_ROWS; i++, row++) {
+        err = paint_row_text(row, hist_at(i));
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    for (; row < LCD_TEXT_ROWS; row++) {
+        err = paint_row_text(row, "");
+        if (err != ESP_OK) {
+            break;
+        }
+    }
+    return err;
+}
+
+static esp_err_t paint_view(void)
+{
+    if (view_page <= 0) {
+        view_page = 0;
+        return paint_live();
+    }
+    return paint_history(view_page);
+}
+
+static esp_err_t lcd_text_write_row_unlocked(int row, const char *text)
+{
+    if (lcd_panel == NULL || row < 0 || row >= LCD_TEXT_ROWS) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (text != screen[row]) {
+        copy_line(screen[row], text);
+    }
+    return paint_row_text(row, screen[row]);
+}
+
 esp_err_t lcd_text_set_fg_color(uint16_t color)
 {
     lcd_take();
     color_fg = color;
     if (lcd_panel == NULL) {
         lcd_give();
+        config_set_color(color);
         return ESP_ERR_INVALID_ARG;
     }
-    esp_err_t err = ESP_OK;
-    for (int row = 0; row < LCD_TEXT_ROWS; row++) {
-        err = lcd_text_write_row_unlocked(row, screen[row]);
-        if (err != ESP_OK) {
-            break;
-        }
-    }
+    esp_err_t err = paint_view();
     lcd_give();
+    config_set_color(color);
     return err;
 }
 
@@ -205,11 +323,7 @@ void lcd_text_redraw(void)
         lcd_give();
         return;
     }
-    for (int row = 0; row < LCD_TEXT_ROWS; row++) {
-        if (lcd_text_write_row_unlocked(row, screen[row]) != ESP_OK) {
-            break;
-        }
-    }
+    paint_view();
     lcd_give();
 }
 
@@ -230,18 +344,29 @@ void lcd_text_set_screen_lines(int screen_line)
 static esp_err_t append_line_unlocked(const char *text)
 {
     esp_err_t err = ESP_OK;
+    bool show = view_page == 0;
+
     if (screen_lines < LCD_TEXT_ROWS) {
-        err = lcd_text_write_row_unlocked(screen_lines, text);
+        if (text != screen[screen_lines]) {
+            copy_line(screen[screen_lines], text);
+        }
+        if (show) {
+            err = paint_row_text(screen_lines, screen[screen_lines]);
+        }
         if (err == ESP_OK) {
             screen_lines++;
         }
         return err;
     }
 
+    hist_push(screen[0]);
     memmove(screen[0], screen[1], (LCD_TEXT_ROWS - 1) * (LCD_TEXT_COLS + 1));
     copy_line(screen[LCD_TEXT_ROWS - 1], text);
+    if (!show) {
+        return ESP_OK;
+    }
     for (int row = 0; row < LCD_TEXT_ROWS; row++) {
-        err = lcd_text_write_row_unlocked(row, screen[row]);
+        err = paint_row_text(row, screen[row]);
         if (err != ESP_OK) {
             break;
         }
@@ -249,23 +374,40 @@ static esp_err_t append_line_unlocked(const char *text)
     return err;
 }
 
-static esp_err_t set_draft_unlocked(const char *text)
+static esp_err_t set_draft_unlocked(const char *text, bool reveal)
 {
+    bool jumped = reveal && view_page != 0;
+
+    if (reveal) {
+        view_page = 0;
+    }
     if (!draft_on) {
         if (screen_lines >= LCD_TEXT_ROWS) {
+            hist_push(screen[0]);
             memmove(screen[0], screen[1], (LCD_TEXT_ROWS - 1) * (LCD_TEXT_COLS + 1));
             screen_lines = LCD_TEXT_ROWS - 1;
-            for (int row = 0; row < LCD_TEXT_ROWS - 1; row++) {
-                esp_err_t err = lcd_text_write_row_unlocked(row, screen[row]);
-                if (err != ESP_OK) {
-                    return err;
+            if (reveal && !jumped) {
+                for (int row = 0; row < LCD_TEXT_ROWS - 1; row++) {
+                    esp_err_t err = paint_row_text(row, screen[row]);
+                    if (err != ESP_OK) {
+                        return err;
+                    }
                 }
             }
         }
         draft_row = screen_lines;
         draft_on = true;
     }
-    return lcd_text_write_row_unlocked(draft_row, text);
+    if (text != screen[draft_row]) {
+        copy_line(screen[draft_row], text);
+    }
+    if (!reveal) {
+        return ESP_OK;
+    }
+    if (jumped) {
+        return paint_live();
+    }
+    return paint_row_text(draft_row, screen[draft_row]);
 }
 
 esp_err_t lcd_text_set_draft(const char *text)
@@ -274,7 +416,7 @@ esp_err_t lcd_text_set_draft(const char *text)
         return ESP_ERR_INVALID_ARG;
     }
     lcd_take();
-    esp_err_t err = set_draft_unlocked(text);
+    esp_err_t err = set_draft_unlocked(text, true);
     lcd_give();
     return err;
 }
@@ -303,7 +445,7 @@ esp_err_t lcd_text_append_line(const char *text)
     }
     esp_err_t err = append_line_unlocked(text);
     if (restore && err == ESP_OK) {
-        err = set_draft_unlocked(saved);
+        err = set_draft_unlocked(saved, false);
     }
     lcd_give();
     return err;
@@ -441,14 +583,174 @@ static bool parse_color(const char *text, uint16_t *color)
     return false;
 }
 
+static void blank_live(void)
+{
+    for (int row = 0; row < LCD_TEXT_ROWS; row++) {
+        copy_line(screen[row], "");
+    }
+    screen_lines = 0;
+    draft_on = false;
+    view_page = 0;
+}
+
+static bool parse_page_count(const char *text, int *out)
+{
+    int n = 0;
+    int digits = 0;
+
+    if (text == NULL || out == NULL) {
+        return false;
+    }
+    while (text[digits] != '\0') {
+        if (text[digits] < '0' || text[digits] > '9' || digits >= 2) {
+            return false;
+        }
+        n = n * 10 + (text[digits] - '0');
+        digits++;
+    }
+    if (digits == 0 || n < LCD_PAGE_MIN || n > LCD_PAGE_MAX) {
+        return false;
+    }
+    *out = n;
+    return true;
+}
+
+int lcd_text_page_count(void)
+{
+    int n;
+    lcd_take();
+    n = page_keep;
+    lcd_give();
+    return n;
+}
+
+void lcd_text_set_page_count(int pages)
+{
+    if (pages < LCD_PAGE_MIN || pages > LCD_PAGE_MAX) {
+        return;
+    }
+    lcd_take();
+    page_keep = pages;
+    hist_trim();
+    if (view_page > history_pages()) {
+        view_page = history_pages();
+    }
+    paint_view();
+    lcd_give();
+    config_set_page(pages);
+}
+
+void lcd_text_page_up(void)
+{
+    lcd_take();
+    if (lcd_panel != NULL && view_page < history_pages()) {
+        view_page++;
+        paint_history(view_page);
+    }
+    lcd_give();
+}
+
+void lcd_text_page_down(void)
+{
+    lcd_take();
+    if (lcd_panel != NULL && view_page > 0) {
+        view_page--;
+        paint_view();
+    }
+    lcd_give();
+}
+
+void lcd_text_page_status(int *shown, int *total)
+{
+    lcd_take();
+    if (shown != NULL) {
+        *shown = view_page + 1;
+    }
+    if (total != NULL) {
+        *total = history_pages() + 1;
+    }
+    lcd_give();
+}
+
+void lcd_text_clear(bool history)
+{
+    lcd_take();
+    if (history) {
+        hist_count = 0;
+        hist_head = 0;
+    }
+    blank_live();
+    paint_live();
+    lcd_give();
+}
+
+void lcd_text_command_page(int argc, char **argv)
+{
+    int pages = 0;
+
+    if (argc < 1) {
+        trace_printf("page %d", lcd_text_page_count());
+        trace_print("system page [2-10]");
+        return;
+    }
+    if (!parse_page_count(argv[0], &pages)) {
+        trace_print("system page [2-10]");
+        return;
+    }
+    lcd_text_set_page_count(pages);
+    trace_printf("page %d", lcd_text_page_count());
+}
+
+static void cmd_page(int argc, char **argv)
+{
+    int shown = 1;
+    int total = 1;
+
+    if (argc < 2) {
+        lcd_text_page_status(&shown, &total);
+        trace_printf("page %d/%d", shown, total);
+        trace_print("page up|down");
+        return;
+    }
+    if (same_word(argv[1], "up")) {
+        lcd_text_page_up();
+        return;
+    }
+    if (same_word(argv[1], "down")) {
+        lcd_text_page_down();
+        return;
+    }
+    trace_print("page up|down");
+}
+
+static void cmd_clear(int argc, char **argv)
+{
+    if (argc < 2) {
+        lcd_text_clear(false);
+        trace_print("clear [history]");
+        return;
+    }
+    if (!same_word(argv[1], "history")) {
+        trace_print("clear [history]");
+        return;
+    }
+    lcd_text_clear(true);
+    trace_print("history cleared");
+}
+
 static void cmd_color(int argc, char **argv)
 {
     uint16_t color = 0;
-    if (argc < 2 || !parse_color(argv[1], &color)) {
-        trace_print("color <name|hex>");
+    if (argc < 1 || !parse_color(argv[0], &color)) {
+        trace_print("system color <name|hex>");
         return;
     }
     lcd_text_set_fg_color(color);
+}
+
+void lcd_text_command_color(int argc, char **argv)
+{
+    cmd_color(argc, argv);
 }
 
 static void cmd_splash(int argc, char **argv)
@@ -460,6 +762,7 @@ static void cmd_splash(int argc, char **argv)
 
 void lcd_text_register_commands(void)
 {
-    command_register("color", "set text color", cmd_color);
     command_register("splash", "show boot picture", cmd_splash);
+    command_register("page", "up|down", cmd_page);
+    command_register("clear", "clear [history]", cmd_clear);
 }

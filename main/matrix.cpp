@@ -233,6 +233,7 @@ static void cmd_matrix(int argc, char **argv)
     if (same_word(argv[1], "key")) {
         if (argc < 3) {
             trace_printf("matrix key %d", key_echo ? 1 : 0);
+            trace_print("matrix key [0|1]");
             return;
         }
         if ((argv[2][0] != '0' && argv[2][0] != '1') || argv[2][1] != '\0') {

@@ -24,9 +24,20 @@ bool lcd_text_ready(void);
 esp_err_t lcd_text_write_row(int row, const char *text);
 
 /* Append one line, like a terminal. The first 15 lines fill rows 0..14.
- * After that, every line scrolls the screen up and is drawn on the last row. */
+ * After that, every line scrolls the screen up and is drawn on the last row.
+ * Lines that leave the screen stay in the page cache. */
 esp_err_t lcd_text_append_line(const char *text);
 void lcd_text_set_screen_lines(int screen_line);
+
+/* Saved pages include the live screen. Default is 3. Range is 2..10. */
+int lcd_text_page_count(void);
+void lcd_text_set_page_count(int pages);
+void lcd_text_page_up(void);
+void lcd_text_page_down(void);
+void lcd_text_page_status(int *shown, int *total);
+
+/* Blank the live screen. history also drops the saved pages. */
+void lcd_text_clear(bool history);
 
 /* Draw the line being edited on the next free row. Later edits rewrite that row.
  * A following append keeps this line under the new text. */
@@ -43,6 +54,12 @@ void lcd_text_redraw(void);
 esp_err_t lcd_text_show_splash(void);
 
 void lcd_text_register_commands(void);
+
+/* argv is the text after "system color". */
+void lcd_text_command_color(int argc, char **argv);
+
+/* argv is the text after "system page". */
+void lcd_text_command_page(int argc, char **argv);
 
 #ifdef __cplusplus
 }

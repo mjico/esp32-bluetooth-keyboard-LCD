@@ -139,6 +139,7 @@ static void cmd_sonar(int argc, char **argv)
             return;
         }
         trace_printf("sonar %u.%u cm", (unsigned)(raw / 10), (unsigned)(raw % 10));
+        trace_print("sonar [color|breath]");
         return;
     }
     if (same_word(argv[1], "color")) {

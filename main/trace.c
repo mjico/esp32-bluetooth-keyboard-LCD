@@ -194,6 +194,7 @@ static void cmd_trace(int argc, char **argv)
     if (argc < 2) {
         show_switch("screen", screen);
         show_switch("serial", serial);
+        trace_print("trace serial|screen [0|1]");
         return;
     }
     if (same_word(argv[1], "screen")) {
@@ -207,6 +208,7 @@ static void cmd_trace(int argc, char **argv)
     is_screen = name[1] == 'c';
     if (argc < 3) {
         show_switch(name, is_screen ? screen : serial);
+        trace_print("trace serial|screen [0|1]");
         return;
     }
     if ((argv[2][0] != '0' && argv[2][0] != '1') || argv[2][1] != '\0') {

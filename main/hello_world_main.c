@@ -5,10 +5,13 @@
 #include "bluetooth.h"
 #include "button.h"
 #include "command_interpreter.h"
+#include "config.h"
 #include "debug_port.h"
 #include "font.h"
+#include "gpio_lab.h"
 #include "i2c.h"
 #include "sonar.h"
+#include "system_cmd.h"
 #include "matrix.h"
 #include "lcd_text.h"
 #include "trace.h"
@@ -66,13 +69,18 @@ static void on_debug_line(const char *line, void *ctx)
 void app_main(void)
 {
     command_init();
-    font_register_commands();
     lcd_text_register_commands();
     trace_register_commands();
     bluetooth_register_commands();
     i2c_register_commands();
     sonar_register_commands();
     matrix_register_commands();
+    gpio_lab_register_commands();
+    system_register_commands();
+    config_start();
+    font_set_width(config_font());
+    lcd_text_set_fg_color(config_color());
+    lcd_text_set_page_count(config_page());
 
     trace_printf("reset reason %d", (int)esp_reset_reason());
     /* Soft reset during RF calibration leaves the modem power domain half-on. */
@@ -80,8 +88,8 @@ void app_main(void)
 
     uint8_t xl_addr = 0;
     bool i2c_ok = i2c_port_start(&xl_addr) == ESP_OK;
-    if (i2c_ok && i2c_backlight_on() == ESP_OK) {
-        trace_print("backlight IO1_6 set high");
+    if (i2c_ok && i2c_backlight_set(config_backlight()) == ESP_OK) {
+        trace_printf("backlight %d", config_backlight() ? 1 : 0);
     }
     ESP_ERROR_CHECK(lcd_text_start());
 
@@ -95,5 +103,8 @@ void app_main(void)
         ESP_ERROR_CHECK(button_bind(KEY1 | KEY4, on_key_serial));
         ESP_ERROR_CHECK(button_bind(KEY4, on_key_splash));
         ESP_ERROR_CHECK(button_start(xl_addr));
+    }
+    if (config_bt()) {
+        bluetooth_reconnect();
     }
 }

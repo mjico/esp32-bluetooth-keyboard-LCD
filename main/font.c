@@ -1,6 +1,6 @@
 #include "font.h"
 
-#include "command_interpreter.h"
+#include "config.h"
 #include "lcd_text.h"
 #include "trace.h"
 
@@ -33,22 +33,26 @@ void font_set_width(int width)
     } else {
         active_width = 5;
     }
+    config_set_font(active_width);
 }
 
 static void cmd_font(int argc, char **argv)
 {
-    if (argc >= 2) {
-        if ((argv[1][0] != '5' && argv[1][0] != '6') || argv[1][1] != '\0') {
-            trace_print("font [5|6]");
+    if (argc >= 1) {
+        if ((argv[0][0] != '5' && argv[0][0] != '6') || argv[0][1] != '\0') {
+            trace_print("system font [5|6]");
             return;
         }
-        font_set_width(argv[1][0] - '0');
+        font_set_width(argv[0][0] - '0');
         lcd_text_redraw();
     }
     trace_printf("font %d", font_width());
+    if (argc < 1) {
+        trace_print("system font [5|6]");
+    }
 }
 
-void font_register_commands(void)
+void font_command(int argc, char **argv)
 {
-    command_register("font", "glyph width 5 or 6", cmd_font);
+    cmd_font(argc, argv);
 }

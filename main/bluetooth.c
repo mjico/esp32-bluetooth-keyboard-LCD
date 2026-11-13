@@ -21,6 +21,7 @@
 #include "freertos/task.h"
 #include "command_history.h"
 #include "command_interpreter.h"
+#include "config.h"
 #include "lcd_text.h"
 #include "matrix.h"
 #include "nvs.h"
@@ -54,6 +55,8 @@ static bool want_scan;
 static bool scanning;
 static bool scan_discover;
 static bool reconnect_stop;
+static bool scan_only;
+static bool wait_said;
 static bool hid_ready;
 static found_device_t devices[MAX_DEVICES];
 static int device_count;
@@ -560,6 +563,14 @@ static void show_keys(const uint8_t *data, uint16_t length)
             recall_key_line();
             continue;
         }
+        if (key == 0x4B) {
+            lcd_text_page_up();
+            continue;
+        }
+        if (key == 0x4E) {
+            lcd_text_page_down();
+            continue;
+        }
         if (key == 0x2a) {
             if (key_len > 0) {
                 key_len--;
@@ -623,6 +634,11 @@ static void hidh_callback(void *handler_args, esp_event_base_t base, int32_t id,
             xSemaphoreGive(close_done);
         } else {
             trace_print("disconnected");
+            if (config_bt() && scan_task != NULL && !scanning) {
+                wait_said = false;
+                scan_only = true;
+                xTaskNotifyGive(scan_task);
+            }
         }
         break;
     default:
@@ -822,7 +838,11 @@ static void pick_device(const button_choice_t *choice, void *ctx)
 
 static void connect_task(void *arg)
 {
-    bluetooth_connect((int)(intptr_t)arg);
+    esp_err_t err = bluetooth_connect((int)(intptr_t)arg);
+    if (err != ESP_OK && config_bt() && !scan_discover && scan_task != NULL) {
+        scan_only = true;
+        xTaskNotifyGive(scan_task);
+    }
     vTaskDelete(NULL);
 }
 
@@ -861,7 +881,16 @@ static void finish_scan(void)
     if (!scan_discover) {
         int index = reconnect_index();
         if (index < 0) {
-            trace_print("no paired device");
+            if (config_bt() && scan_task != NULL) {
+                scan_only = true;
+                if (!wait_said) {
+                    trace_print("wait keyboard");
+                    wait_said = true;
+                }
+                xTaskNotifyGive(scan_task);
+            } else {
+                trace_print("no paired device");
+            }
             return;
         }
         if (xTaskCreate(connect_task, "bt-connect", 8192, (void *)(intptr_t)(index + 1), 5, NULL) != pdPASS) {
@@ -1038,6 +1067,7 @@ static void run_scan(void)
         esp_err_t err = stack_init();
         if (err != ESP_OK) {
             scanning = false;
+            scan_only = false;
             trace_printf("init %s", esp_err_to_name(err));
             trace_print("bt init failed");
             return;
@@ -1048,9 +1078,10 @@ static void run_scan(void)
     device_count = 0;
     reconnect_stop = false;
     load_known();
+    scanning = true;
 
     /* Reconnect ads often omit HID UUID. Try the last working address first, then scan. */
-    if (!scan_discover) {
+    if (!scan_discover && !scan_only) {
         if (try_direct_reconnect()) {
             scanning = false;
             return;
@@ -1058,6 +1089,7 @@ static void run_scan(void)
         device_count = 0;
         trace_print("reconnect");
     }
+    scan_only = false;
 
     if (!params_ready) {
         /* Set this before the scan-parameter command, or the completion callback can miss it. */
@@ -1074,11 +1106,21 @@ static void run_scan(void)
     }
 }
 
+static bool link_is_up(void);
+
 static void scan_task_fn(void *arg)
 {
     (void)arg;
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (scan_only) {
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            ulTaskNotifyTake(pdTRUE, 0);
+            if (!scan_discover && (!config_bt() || link_is_up())) {
+                scan_only = false;
+                continue;
+            }
+        }
         run_scan();
     }
 }
@@ -1097,6 +1139,9 @@ static esp_err_t start_scan(bool discover)
         }
     }
     scan_discover = discover;
+    if (discover) {
+        scan_only = false;
+    }
     scanning = true;
     trace_print(discover ? "discover" : "reconnect");
     xTaskNotifyGive(scan_task);
@@ -1227,6 +1272,7 @@ esp_err_t bluetooth_connect(int index)
     }
     snprintf(line, sizeof(line), "ready %.33s", dev->name);
     trace_print(line);
+    wait_said = false;
     return ESP_OK;
 }
 

@@ -8,8 +8,8 @@ ESP32-S3 开发板固件：320×240 屏幕当终端，USB 串口和蓝牙键盘�
 
 ## 能做什么
 
-- 屏幕终端：8×16 ASCII，40 列 × 15 行，满屏向上滚。超长输出自动换行，一次最多 5 行，截断处显示 `[...]`。
-- USB 串口行编辑：本地回显、`>` 提示符、上翻历史。
+- 屏幕终端：8×16 ASCII，40 列 × 15 行。满屏后继续往上滚，滚出的行留在页缓存里。默认 3 页，`system page` 可改成 2–10。
+- USB 串口行编辑：本地回显、`>` 提示符、上翻历史。Page Up / Page Down 翻屏幕页。
 - 蓝牙 HID 键盘：逐键回显，Enter 才提交。主键盘标点和小键盘数字、`/ * - + .` 都有映射。和串口共用同一套命令和 8 条历史。Num Lock 打开后小键盘数字才有效。
 - 命令由各模块自己注册。`help` 列出关键字和一行说明。
 - `trace screen` / `trace serial` 两个开关互不影响，分别控制屏幕和串口输出。
@@ -19,7 +19,11 @@ ESP32-S3 开发板固件：320×240 屏幕当终端，USB 串口和蓝牙键盘�
 - 一条 I2C 总线同时服务背光、按键和 5 路扩展座。`i2c` 命令可以扫描、读寄存器、写寄存器。
 - 扩展座上的超声波（`0x77`）读厘米，并可设常亮或呼吸灯。
 - 扩展座上的点阵 `matrix-iic_v2.0`（`0x4C`）显示图像、单字符和键盘回显。回显默认关。
-- `font 5` / `font 6` 切换整机字宽。LCD 和点阵用同一套字，切换后屏幕已有文字会重画。
+- `font` 在 `system font` 下面切换整机字宽。LCD 和点阵用同一套字，切换后屏幕已有文字会重画。
+- `system` 查看堆、芯片、任务、版本和运行时间，并改颜色、字宽、背光、页数和开机回连。
+- 这些设置写在 Flash NVS 里，上电重新载入。
+- `system bt 1` 时，开机回连上次的键盘；键盘断开后继续等它回来再连上。
+- `gpio` 只对 PWM 座的 GPIO9–12 做输入、输出和环回实验。
 
 ## 按键
 
@@ -43,7 +47,17 @@ ESP32-S3 开发板固件：320×240 屏幕当终端，USB 串口和蓝牙键盘�
 | 命令 | 作用 |
 | --- | --- |
 | `help` | 列出已注册命令 |
-| `color <name\|hex>` | 改文字颜色。名字：black white red green blue yellow cyan magenta。也接受 RGB565（4 位十六进制）或 RGB888（6 位） |
+| `system` | 打印运行时间、空闲堆、复位原因、任务数、版本，并提示子命令 |
+| `system heap` / `chip` / `ver` / `up` | 堆、芯片、版本、运行时间 |
+| `system task` | 每个任务的名字、状态、优先级、剩余栈、核。`tasks` 同样有效。核 0/1 是绑定，-1 是不绑核 |
+| `system font` | 当前字宽。`system font 5` 或 `6` 切换并重画 LCD |
+| `system color <name\|hex>` | 改文字颜色。名字：black white red green blue yellow cyan magenta。也接受 RGB565（4 位十六进制）或 RGB888（6 位） |
+| `system backlight` | 当前背光。`system backlight 0` 或 `1` 开关，并记住 |
+| `system page` | 当前保存页数，默认 3。`system page 2` 到 `10` 修改 |
+| `system bt` | 当前是否开机回连。`system bt 1` 开机去连上次的键盘，断开后继续等它回来。`0` 关掉自动连接 |
+| `page` | 当前是第几页。`page up` / `page down` 翻页 |
+| `clear` | 清掉当前屏，已翻走的页还在 |
+| `clear history` | 连保存的页一起清掉 |
 | `splash` | 重放开机画面。在两张 ASCII 画里随机选一张，每行间隔 0.5 秒，走 `trace` |
 | `trace` | 打印 screen、serial 两个开关的当前值 |
 | `trace screen` / `trace serial` | 只看这一路是 0 还是 1 |
@@ -56,15 +70,20 @@ ESP32-S3 开发板固件：320×240 屏幕当终端，USB 串口和蓝牙键盘�
 | `sonar` | 读距离，打印 `u.u cm`。原始值单位是 0.1 cm |
 | `sonar color <r1 g1 b1 r2 g2 b2>` | 常亮。两组 RGB，每字节 0–255 |
 | `sonar breath <r1 g1 b1 r2 g2 b2>` | 呼吸灯周期，6 个字节 |
-| `font` | 打印当前字宽，默认 5 |
-| `font 5` / `font 6` | 换成 5 像素或 6 像素宽的 8×16 字，并重画 LCD |
-| `matrix key` | 打印键盘回显开关。`matrix key 1` 打开，`0` 关闭。默认关 |
+| `matrix` | 提示子命令：key、bright、clear、image、char、scroll、raw |
+| `matrix key` | 当前键盘回显开关。`matrix key 1` 打开，`0` 关闭。默认关 |
 | `matrix bright <88-8F>` | 点阵亮度 |
 | `matrix clear` | 清屏 |
 | `matrix image <1\|2\|both> <name> [1-4]` | 显示命名图像。名字：smile sad heart up box cross check fill。方向 1 正向，2 顺时针 90°，3 为 180°，4 顺时针 270° |
 | `matrix char <c>` | 两块 8×8 拼一个字符。上 8 行在左屏，下 8 行在右屏，再右移 1 像素 |
 | `matrix raw <16 bytes>` | 直接写静态帧 |
 | `matrix scroll <bytes>` | 滚动。协议没有方向 |
+| `gpio` | 提示 mode、pull、set、get、loop，并列出 pwm1–pwm4 |
+| `gpio mode <pin> in\|out` | 把 GPIO9–12 设成输入或输出 |
+| `gpio pull <pin> up\|down\|none` | 输入上下拉 |
+| `gpio set <pin> 0\|1` | 在输出模式下写电平 |
+| `gpio get <pin>` | 在输入模式下读电平 |
+| `gpio loop <out> <in> 0\|1` | 一边输出、一边读回 |
 
 默认屏幕输出开、串口输出关。两个都关掉之前，状态行会先打出来。
 
@@ -83,7 +102,7 @@ ESP32-S3 开发板固件：320×240 屏幕当终端，USB 串口和蓝牙键盘�
 
 屏的方向：`swap_xy`，左右镜像，小端 RGB565，颜色反相打开。字是黑底，前景色运行时默认白色。
 
-蓝牙是 BLE 4.2（Bluedroid），走 HID over GATT。配对是 Just Works，绑定信息在 NVS（`bt_config.conf`，最多 15 个）。上次连上的键盘名字和地址另外记在 NVS 命名空间 `bt_hid`。
+蓝牙是 BLE 4.2（Bluedroid），走 HID over GATT。配对是 Just Works，绑定信息在 NVS（`bt_config.conf`，最多 15 个）。上次连上的键盘名字和地址另外记在 NVS 命名空间 `bt_hid`。颜色、字宽、背光、页数和 `system bt` 记在命名空间 `cfg`。`system bt 1` 时开机回连，断开后继续等键盘回来。
 
 更细的网表见 [board_schematic.md](board_schematic.md) 和 [board_database.md](board_database.md)。
 
@@ -100,7 +119,7 @@ ESP32-S3 开发板固件：320×240 屏幕当终端，USB 串口和蓝牙键盘�
 | 主机 | Windows，PowerShell |
 | 下载线 | 板上原生 USB，端口 COM8，波特率 460800 |
 
-`sdkconfig.defaults` 里打开的选项：USB Serial/JTAG 控制台、Bluedroid BLE 4.2、`CONFIG_BT_GATTC_NOTIF_REG_MAX=16`、中断看门狗 3000 ms。
+`sdkconfig.defaults` 里打开的选项：USB Serial/JTAG 控制台、Bluedroid BLE 4.2、`CONFIG_BT_GATTC_NOTIF_REG_MAX=16`、中断看门狗 3000 ms、FreeRTOS trace（任务列表和核号）。
 
 仓库里的 `package.json` 是早期 Agent SDK 脚手架，**编固件用不到**。固件只依赖 ESP-IDF。
 
@@ -126,20 +145,23 @@ idf.py -p COM8 build flash
 ## 目录
 
 ```
-main/hello_world_main.c    上电：射频域复位、I2C、背光、lcd_text_start、命令注册、按键
-main/lcd_text.c            ST7789、字符终端、随机开机画面、color / splash
-main/debug_port.c          USB 串口行编辑
+main/hello_world_main.c    上电：载入配置、射频域复位、I2C、背光、lcd_text_start、按键、按 bt 回连
+main/lcd_text.c            ST7789、字符终端、页缓存、随机开机画面、splash
+main/debug_port.c          USB 串口行编辑，Page Up / Page Down 翻页
 main/command_interpreter.* 命令注册、help、历史提交
 main/command_history.*     8 条命令历史
 main/trace.c               屏幕/串口两个输出开关
 main/button.*              按键掩码、短按、长按、选择会话
-main/bluetooth.c           HID 扫描、配对、回连、键盘行
-main/i2c.*                 共享 I2C 和 i2c 命令
+main/bluetooth.c           HID 扫描、配对、回连、断开后等待、键盘行
+main/i2c.*                 共享 I2C、背光和 i2c 命令
 main/sonar.*               超声波，地址 0x77
 main/matrix.*              点阵，地址 0x4C
-main/font.c                5/6 像素字宽，font 命令
+main/font.c                5/6 像素字宽
 main/font8x16.inc          原 8×16 字模，最宽约 5 像素
 main/font8x16_w6.inc       6 像素宽字模
+main/system_cmd.c          system 子命令
+main/config.*              NVS 配置类
+main/gpio_lab.*            PWM 座 GPIO9–12 实验
 sdkconfig.defaults         需要强制打开的 Kconfig
 .cursor/rules/             Cursor 工程规则，例如烧录另开 agent
 ```

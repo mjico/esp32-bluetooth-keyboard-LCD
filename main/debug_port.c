@@ -5,6 +5,7 @@
 #include "debug_port.h"
 
 #include "command_history.h"
+#include "lcd_text.h"
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 #include "freertos/FreeRTOS.h"
@@ -59,6 +60,7 @@ static void debug_task(void *arg)
     int length = 0;
     int hist = -1;
     int esc = 0;
+    int esc_page = 0;
     (void)arg;
 
     static const char ready[] = "\ndebug port ready\n>";
@@ -81,6 +83,18 @@ static void debug_task(void *arg)
             esc = 0;
             if (ch == 'A' && command_history_up(&hist, recalled, sizeof(recalled))) {
                 replace_line(line, &length, recalled);
+            } else if (ch == '5' || ch == '6') {
+                esc = 3;
+                esc_page = ch;
+            }
+            continue;
+        }
+        if (esc == 3) {
+            esc = 0;
+            if (ch == '~' && esc_page == '5') {
+                lcd_text_page_up();
+            } else if (ch == '~' && esc_page == '6') {
+                lcd_text_page_down();
             }
             continue;
         }

@@ -17,6 +17,9 @@ public:
 
     esp_err_t start(uint8_t *xl_addr);
     esp_err_t backlight_on();
+    /* XL9555 IO1_6. High turns the LCD backlight on. */
+    esp_err_t backlight_set(bool on);
+    esp_err_t backlight_get(bool *on);
     esp_err_t probe(uint8_t addr);
     esp_err_t scan(uint8_t *addrs, int *count, int max_count);
     esp_err_t read(uint8_t addr, uint8_t reg, uint8_t *data, size_t len);
