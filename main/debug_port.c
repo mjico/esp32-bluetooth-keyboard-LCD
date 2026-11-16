@@ -1,11 +1,13 @@
-#include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <unistd.h>
 
 #include "debug_port.h"
 
 #include "command_history.h"
+#include "camera.h"
 #include "lcd_text.h"
+#include "trace.h"
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
 #include "freertos/FreeRTOS.h"
@@ -16,32 +18,39 @@
 static debug_port_line_fn s_on_line;
 static void *s_ctx;
 
-static void echo_bytes(const void *data, size_t length)
+static void show_edit(const char *line)
 {
-    const char *bytes = data;
-    while (length > 0) {
-        ssize_t wrote = write(STDOUT_FILENO, bytes, length);
-        if (wrote < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                vTaskDelay(pdMS_TO_TICKS(1));
-                continue;
-            }
-            return;
-        }
-        bytes += wrote;
-        length -= (size_t)wrote;
+    char shown[DEBUG_LINE_MAX + 2];
+
+    snprintf(shown, sizeof(shown), ">%s", line != NULL ? line : "");
+    trace_draft(shown);
+}
+
+/* CR LF from the host becomes two LF. The second one must not become the camera exit key. */
+static int read_pending(void)
+{
+    int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+    unsigned char extra;
+    ssize_t got;
+
+    if (flags < 0) {
+        return -1;
     }
+    fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
+    got = read(STDIN_FILENO, &extra, 1);
+    fcntl(STDIN_FILENO, F_SETFL, flags);
+    if (got == 1) {
+        return extra;
+    }
+    return -1;
 }
 
 static void replace_line(char *line, int *length, const char *text)
 {
-    static const char erase[3] = {'\b', ' ', '\b'};
-    for (int i = 0; i < *length; i++) {
-        echo_bytes(erase, sizeof(erase));
-    }
     *length = 0;
     if (text == NULL) {
         line[0] = '\0';
+        show_edit(line);
         return;
     }
     while (text[*length] != '\0' && *length < DEBUG_LINE_MAX) {
@@ -49,9 +58,7 @@ static void replace_line(char *line, int *length, const char *text)
         (*length)++;
     }
     line[*length] = '\0';
-    if (*length > 0) {
-        echo_bytes(line, (size_t)*length);
-    }
+    show_edit(line);
 }
 
 static void debug_task(void *arg)
@@ -61,16 +68,31 @@ static void debug_task(void *arg)
     int hist = -1;
     int esc = 0;
     int esc_page = 0;
+    int held = -1;
     (void)arg;
 
-    static const char ready[] = "\ndebug port ready\n>";
-    echo_bytes(ready, sizeof(ready) - 1);
+    trace_print("debug port ready");
+    show_edit("");
 
     for (;;) {
         unsigned char ch;
-        ssize_t got = read(STDIN_FILENO, &ch, 1);
-        if (got <= 0) {
-            vTaskDelay(pdMS_TO_TICKS(10));
+        if (held >= 0) {
+            ch = (unsigned char)held;
+            held = -1;
+        } else {
+            ssize_t got = read(STDIN_FILENO, &ch, 1);
+            if (got <= 0) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+                continue;
+            }
+        }
+        if (lcd_text_pixels_holding() || camera_preview_active()) {
+            if (camera_preview_active()) {
+                camera_preview_request_stop();
+            } else {
+                lcd_text_pixels_release();
+            }
+            esc = 0;
             continue;
         }
 
@@ -105,27 +127,34 @@ static void debug_task(void *arg)
         }
 
         if (ch == '\n') {
-            echo_bytes("\n>", 2);
+            int extra = read_pending();
             line[length] = '\0';
+            trace_commit();
+            length = 0;
+            hist = -1;
+            if (extra >= 0 && extra != '\n') {
+                held = extra;
+            }
             if (s_on_line != NULL) {
                 s_on_line(line, s_ctx);
             }
-            length = 0;
-            hist = -1;
+            show_edit("");
             continue;
         }
 
         if (ch == '\b' || ch == 0x7f) {
             if (length > 0) {
                 length--;
-                echo_bytes("\b \b", 3);
+                line[length] = '\0';
+                show_edit(line);
             }
             continue;
         }
 
-        echo_bytes(&ch, 1);
         if (length < DEBUG_LINE_MAX) {
             line[length++] = (char)ch;
+            line[length] = '\0';
+            show_edit(line);
         }
     }
 }

@@ -5,5 +5,5 @@
 /* Called with one finished line. The newline is not included. */
 typedef void (*debug_port_line_fn)(const char *line, void *ctx);
 
-/* Read the USB debug port, echo every key, and deliver each line. */
+/* Read the USB debug port and deliver each line. Echo goes through trace. */
 esp_err_t debug_port_start(debug_port_line_fn on_line, void *ctx);

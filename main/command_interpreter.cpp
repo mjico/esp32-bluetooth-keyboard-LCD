@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "command_history.h"
+#include "esp_log.h"
 #include "trace.h"
 
 SerialCommand::SerialCommand() : count_(0)
@@ -94,7 +95,11 @@ extern "C" void command_init(void)
 
 extern "C" esp_err_t command_register(const char *keyword, const char *help, command_fn_t fn)
 {
-    return commands().add(keyword, help, fn) ? ESP_OK : ESP_ERR_INVALID_STATE;
+    if (commands().add(keyword, help, fn)) {
+        return ESP_OK;
+    }
+    ESP_LOGE("cmd", "reject %s", keyword != NULL ? keyword : "");
+    return ESP_ERR_INVALID_STATE;
 }
 
 extern "C" void command_line_execute(const char *line)

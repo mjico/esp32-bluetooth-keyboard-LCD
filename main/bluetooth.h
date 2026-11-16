@@ -20,6 +20,9 @@ esp_err_t bluetooth_connect(int index);
 
 void bluetooth_register_commands(void);
 
+/* Paint the current '>' draft. Used when the camera preview ends. */
+void bluetooth_show_key_draft(void);
+
 #ifdef __cplusplus
 }
 #endif

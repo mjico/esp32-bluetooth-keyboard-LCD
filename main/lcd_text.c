@@ -19,12 +19,27 @@
 #include "freertos/task.h"
 
 #define COLOR_BG 0x0000
+
+static const struct {
+    const char *name;
+    uint16_t value;
+} color_names[] = {
+    {"black", 0x0000},
+    {"white", 0xFFFF},
+    {"red", 0xF800},
+    {"green", 0x07E0},
+    {"blue", 0x001F},
+    {"yellow", 0xFFE0},
+    {"cyan", 0x07FF},
+    {"magenta", 0xF81F},
+};
 #define LCD_PAGE_MIN 2
 #define LCD_PAGE_MAX 10
 #define LCD_PAGE_DEFAULT 3
 #define LCD_HIST_MAX ((LCD_PAGE_MAX - 1) * LCD_TEXT_ROWS)
 
 static uint16_t color_fg = 0xFFFF;
+static volatile bool pixels_hold;
 
 static char screen[LCD_TEXT_ROWS][LCD_TEXT_COLS + 1];
 static char hist[LCD_HIST_MAX][LCD_TEXT_COLS + 1];
@@ -220,6 +235,9 @@ static esp_err_t paint_row_text(int row, const char *text)
 
     if (lcd_panel == NULL || row < 0 || row >= LCD_TEXT_ROWS) {
         return ESP_ERR_INVALID_ARG;
+    }
+    if (pixels_hold) {
+        return ESP_OK;
     }
 
     copy_line(local, text);
@@ -428,6 +446,22 @@ void lcd_text_dismiss_draft(void)
     lcd_give();
 }
 
+bool lcd_text_commit_draft(void)
+{
+    bool did = false;
+
+    lcd_take();
+    if (draft_on && draft_row >= 0 && draft_row < LCD_TEXT_ROWS) {
+        draft_on = false;
+        if (screen_lines <= draft_row) {
+            screen_lines = draft_row + 1;
+        }
+        did = true;
+    }
+    lcd_give();
+    return did;
+}
+
 esp_err_t lcd_text_append_line(const char *text)
 {
     char saved[LCD_TEXT_COLS + 1];
@@ -532,28 +566,34 @@ static bool same_word(const char *text, const char *name)
     return *text == '\0' && *name == '\0';
 }
 
+static const char *color_name(uint16_t color)
+{
+    for (size_t i = 0; i < sizeof(color_names) / sizeof(color_names[0]); i++) {
+        if (color_names[i].value == color) {
+            return color_names[i].name;
+        }
+    }
+    return NULL;
+}
+
+static void print_fg_color(void)
+{
+    const char *name = color_name(color_fg);
+    if (name != NULL) {
+        trace_printf("color %s", name);
+        return;
+    }
+    trace_printf("color %04X", color_fg);
+}
+
 static bool parse_color(const char *text, uint16_t *color)
 {
-    static const struct {
-        const char *name;
-        uint16_t value;
-    } names[] = {
-        {"black", 0x0000},
-        {"white", 0xFFFF},
-        {"red", 0xF800},
-        {"green", 0x07E0},
-        {"blue", 0x001F},
-        {"yellow", 0xFFE0},
-        {"cyan", 0x07FF},
-        {"magenta", 0xF81F},
-    };
-
     if (text == NULL || color == NULL) {
         return false;
     }
-    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
-        if (same_word(text, names[i].name)) {
-            *color = names[i].value;
+    for (size_t i = 0; i < sizeof(color_names) / sizeof(color_names[0]); i++) {
+        if (same_word(text, color_names[i].name)) {
+            *color = color_names[i].value;
             return true;
         }
     }
@@ -738,14 +778,99 @@ static void cmd_clear(int argc, char **argv)
     trace_print("history cleared");
 }
 
+static void fill_random_pixels(void)
+{
+    static uint16_t band[LCD_TEXT_WIDTH * LCD_TEXT_CHAR_H];
+
+    lcd_take();
+    if (lcd_panel == NULL) {
+        lcd_give();
+        return;
+    }
+    for (int y = 0; y < LCD_TEXT_HEIGHT; y += LCD_TEXT_CHAR_H) {
+        for (int i = 0; i < LCD_TEXT_WIDTH * LCD_TEXT_CHAR_H; i += 2) {
+            uint32_t bits = esp_random();
+            band[i] = (uint16_t)bits;
+            band[i + 1] = (uint16_t)(bits >> 16);
+        }
+        esp_lcd_panel_draw_bitmap(lcd_panel, 0, y, LCD_TEXT_WIDTH, y + LCD_TEXT_CHAR_H, band);
+        if (panel_io != NULL) {
+            esp_lcd_panel_io_tx_param(panel_io, 0x00, NULL, 0);
+        }
+    }
+    lcd_give();
+}
+
+bool lcd_text_pixels_holding(void)
+{
+    return pixels_hold;
+}
+
+void lcd_text_hold_screen(void)
+{
+    pixels_hold = true;
+}
+
+esp_err_t lcd_text_blit(int x, int y, int w, int h, const uint16_t *pixels)
+{
+    if (pixels == NULL || w <= 0 || h <= 0 || x < 0 || y < 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if ((size_t)w * (size_t)h * sizeof(uint16_t) >
+        (size_t)LCD_TEXT_WIDTH * LCD_TEXT_CHAR_H * sizeof(uint16_t)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    lcd_take();
+    if (lcd_panel == NULL) {
+        lcd_give();
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = esp_lcd_panel_draw_bitmap(lcd_panel, x, y, x + w, y + h, pixels);
+    if (err == ESP_OK && panel_io != NULL) {
+        err = esp_lcd_panel_io_tx_param(panel_io, 0x00, NULL, 0);
+    }
+    lcd_give();
+    return err;
+}
+
+void lcd_text_pixels_release(void)
+{
+    if (!pixels_hold) {
+        return;
+    }
+    lcd_take();
+    pixels_hold = false;
+    if (lcd_panel != NULL) {
+        paint_view();
+    }
+    lcd_give();
+}
+
+static void cmd_pixels(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    pixels_hold = true;
+    fill_random_pixels();
+}
+
 static void cmd_color(int argc, char **argv)
 {
     uint16_t color = 0;
-    if (argc < 1 || !parse_color(argv[0], &color)) {
-        trace_print("system color <name|hex>");
+
+    if (argc < 1) {
+        print_fg_color();
+        trace_print("system color [name|hex|random]");
+        return;
+    }
+    if (same_word(argv[0], "random")) {
+        color = (uint16_t)esp_random();
+    } else if (!parse_color(argv[0], &color)) {
+        trace_print("system color [name|hex|random]");
         return;
     }
     lcd_text_set_fg_color(color);
+    print_fg_color();
 }
 
 void lcd_text_command_color(int argc, char **argv)
@@ -765,4 +890,5 @@ void lcd_text_register_commands(void)
     command_register("splash", "show boot picture", cmd_splash);
     command_register("page", "up|down", cmd_page);
     command_register("clear", "clear [history]", cmd_clear);
+    command_register("pixels", "random, key back", cmd_pixels);
 }

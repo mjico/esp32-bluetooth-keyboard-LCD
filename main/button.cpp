@@ -7,6 +7,7 @@
 #include "i2c.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "camera.h"
 #include "lcd_text.h"
 #include "trace.h"
 
@@ -282,6 +283,18 @@ void Button::run()
             pending = pressed;
             have_pending = true;
             vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        if (pressed != 0 && lcd_text_pixels_holding()) {
+            have_sample_ = true;
+            pressed_ = pressed;
+            fired = pressed;
+            chord = pressed;
+            if (camera_preview_active()) {
+                camera_preview_request_stop();
+            } else {
+                lcd_text_pixels_release();
+            }
             continue;
         }
         bool choosing = choice_active();

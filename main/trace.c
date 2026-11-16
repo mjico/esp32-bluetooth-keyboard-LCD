@@ -1,9 +1,11 @@
 #include "trace.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "command_interpreter.h"
 #include "lcd_text.h"
@@ -17,6 +19,11 @@ static const char trace_mark[] = "[...]";
 static bool trace_screen_on = true;
 static bool trace_serial_on = false;
 static SemaphoreHandle_t trace_mu;
+static char draft[LCD_TEXT_COLS + 1];
+static int draft_len;
+static bool draft_live;
+static bool screen_draft;
+static int serial_cols;
 
 static void trace_lock(void)
 {
@@ -67,10 +74,65 @@ bool trace_serial_enabled(void)
     return on;
 }
 
-static void trace_serial(const char *text)
+static void stdout_write(const char *bytes, size_t length)
 {
-    /* The console driver already turns LF into CR LF. */
-    printf("%s\n", text != NULL ? text : "");
+    while (length > 0) {
+        ssize_t wrote = write(STDOUT_FILENO, bytes, length);
+        if (wrote < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                vTaskDelay(pdMS_TO_TICKS(1));
+                continue;
+            }
+            return;
+        }
+        bytes += wrote;
+        length -= (size_t)wrote;
+    }
+}
+
+static bool serial_open(void)
+{
+    return trace_serial_on || !lcd_text_ready();
+}
+
+static void serial_erase(void)
+{
+    char blank[LCD_TEXT_COLS];
+    int n = serial_cols;
+
+    if (n <= 0) {
+        return;
+    }
+    if (n > LCD_TEXT_COLS) {
+        n = LCD_TEXT_COLS;
+    }
+    memset(blank, ' ', (size_t)n);
+    stdout_write("\r", 1);
+    stdout_write(blank, (size_t)n);
+    stdout_write("\r", 1);
+    serial_cols = 0;
+}
+
+static void serial_draw_draft(void)
+{
+    if (!draft_live || !serial_open()) {
+        return;
+    }
+    stdout_write(draft, (size_t)draft_len);
+    serial_cols = draft_len;
+}
+
+/* Caller holds trace_lock. A log line replaces the draft row, then the draft is drawn again. */
+static void emit_serial(const char *text)
+{
+    const char *body = text != NULL ? text : "";
+
+    if (draft_live && serial_cols > 0) {
+        serial_erase();
+    }
+    stdout_write(body, strlen(body));
+    stdout_write("\n", 1);
+    serial_draw_draft();
 }
 
 static void trace_screen(const char *text)
@@ -119,33 +181,95 @@ static void trace_screen(const char *text)
     }
 }
 
-void trace_print_screen(const char *text)
+static void fit_draft(const char *text)
+{
+    int n = 0;
+
+    if (text == NULL) {
+        text = "";
+    }
+    n = (int)strlen(text);
+    if (n > LCD_TEXT_COLS) {
+        text += n - LCD_TEXT_COLS;
+        n = LCD_TEXT_COLS;
+    }
+    memcpy(draft, text, (size_t)n);
+    draft[n] = '\0';
+    draft_len = n;
+}
+
+void trace_draft(const char *text)
 {
     trace_lock();
+    fit_draft(text);
+    draft_live = true;
+    screen_draft = false;
     if (trace_screen_on && lcd_text_ready()) {
-        trace_screen(text);
+        lcd_text_set_draft(draft);
+        screen_draft = true;
+    }
+    if (serial_open()) {
+        serial_erase();
+        serial_draw_draft();
+    }
+    trace_unlock();
+}
+
+void trace_commit(void)
+{
+    trace_lock();
+    if (screen_draft) {
+        lcd_text_commit_draft();
+        screen_draft = false;
+    }
+    if (draft_live && serial_open()) {
+        stdout_write("\n", 1);
+        serial_cols = 0;
+    }
+    draft_live = false;
+    draft_len = 0;
+    draft[0] = '\0';
+    trace_unlock();
+}
+
+void trace_row(int row, const char *text)
+{
+    const char *body = text != NULL ? text : "";
+
+    trace_lock();
+    if (!lcd_text_ready()) {
+        if (body[0] != '\0') {
+            emit_serial(body);
+        }
+        trace_unlock();
+        return;
+    }
+    if (trace_screen_on) {
+        lcd_text_write_row(row, body);
+    }
+    if (trace_serial_on && body[0] != '\0') {
+        if (serial_cols > 0) {
+            serial_erase();
+        }
+        stdout_write(body, strlen(body));
+        stdout_write("\n", 1);
     }
     trace_unlock();
 }
 
 void trace_print(const char *text)
 {
-    bool screen;
-    bool serial;
-
     trace_lock();
-    screen = trace_screen_on;
-    serial = trace_serial_on;
     if (!lcd_text_ready()) {
-        trace_serial(text);
+        emit_serial(text);
         trace_unlock();
         return;
     }
-    if (screen) {
+    if (trace_screen_on) {
         trace_screen(text);
     }
-    if (serial) {
-        trace_serial(text);
+    if (trace_serial_on) {
+        emit_serial(text);
     }
     trace_unlock();
 }

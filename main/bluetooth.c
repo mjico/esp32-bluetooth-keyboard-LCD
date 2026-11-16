@@ -22,6 +22,7 @@
 #include "command_history.h"
 #include "command_interpreter.h"
 #include "config.h"
+#include "camera.h"
 #include "lcd_text.h"
 #include "matrix.h"
 #include "nvs.h"
@@ -57,6 +58,9 @@ static bool scan_discover;
 static bool reconnect_stop;
 static bool scan_only;
 static bool wait_said;
+static bool gap_scanning;
+static bool abandon_scan;
+static bool want_discover;
 static bool hid_ready;
 static found_device_t devices[MAX_DEVICES];
 static int device_count;
@@ -105,10 +109,12 @@ static void key_cmd_task(void *arg)
         char prompted[KEY_LINE_MAX + 2];
         snprintf(prompted, sizeof(prompted), ">%s", line);
         /* The draft row is the line just typed. Commit it, then echo whatever is being typed now. */
-        lcd_text_dismiss_draft();
-        trace_print(prompted);
+        trace_draft(prompted);
+        trace_commit();
         command_line_execute(line);
-        paint_key_draft();
+        if (!lcd_text_pixels_holding()) {
+            paint_key_draft();
+        }
     }
 }
 
@@ -358,7 +364,7 @@ static void show_device(const esp_ble_gap_cb_param_t *scan_rst)
     memcpy(dev->name, name, sizeof(dev->name));
     device_count++;
 
-    if (scan_discover || reconnect_stop) {
+    if (scan_discover || reconnect_stop || abandon_scan) {
         return;
     }
     if (reconnect_hit(dev)) {
@@ -494,7 +500,12 @@ static void paint_key_draft(void)
     shown[0] = '>';
     memcpy(shown + 1, key_line + start, (size_t)n);
     shown[n + 1] = '\0';
-    lcd_text_set_draft(shown);
+    trace_draft(shown);
+}
+
+void bluetooth_show_key_draft(void)
+{
+    paint_key_draft();
 }
 
 static void recall_key_line(void)
@@ -552,6 +563,9 @@ static void show_keys(const uint8_t *data, uint16_t length)
             continue;
         }
         down[down_count++] = key;
+        if (lcd_text_pixels_holding() || camera_preview_active()) {
+            continue;
+        }
         if (key_is_held(key)) {
             continue;
         }
@@ -586,6 +600,29 @@ static void show_keys(const uint8_t *data, uint16_t length)
             dirty = true;
             matrix_on_key(ch);
         }
+    }
+
+    if (lcd_text_pixels_holding() || camera_preview_active()) {
+        bool dismiss = false;
+        for (int i = 0; i < down_count; i++) {
+            if (!key_is_held(down[i])) {
+                dismiss = true;
+                break;
+            }
+        }
+        memset(keys_held, 0, sizeof(keys_held));
+        if (down_count > 0) {
+            memcpy(keys_held, down, (size_t)down_count);
+        }
+        if (dismiss) {
+            if (camera_preview_active()) {
+                camera_preview_request_stop();
+            } else {
+                lcd_text_pixels_release();
+                paint_key_draft();
+            }
+        }
+        return;
     }
 
     if (dirty) {
@@ -811,7 +848,7 @@ static void draw_device_page(const button_choice_t *choice, void *ctx)
     (void)ctx;
     char line[LCD_TEXT_COLS + 1];
     snprintf(line, sizeof(line), "KEY1-3 pick  page %d/%d", choice->page + 1, choice->page_count);
-    lcd_text_write_row(0, line);
+    trace_row(0, line);
     for (int slot = 0; slot < BUTTON_CHOICE_SLOTS; slot++) {
         int index = choice->page * BUTTON_CHOICE_SLOTS + slot;
         if (index >= 0 && index < choice->item_count && index < MAX_DEVICES) {
@@ -819,11 +856,11 @@ static void draw_device_page(const button_choice_t *choice, void *ctx)
         } else {
             line[0] = '\0';
         }
-        lcd_text_write_row(1 + slot, line);
+        trace_row(1 + slot, line);
     }
-    lcd_text_write_row(4, "KEY4 next page");
+    trace_row(4, "KEY4 next page");
     for (int row = 5; row < LCD_TEXT_ROWS; row++) {
-        lcd_text_write_row(row, "");
+        trace_row(row, "");
     }
     lcd_text_set_screen_lines(5);
 }
@@ -839,7 +876,15 @@ static void pick_device(const button_choice_t *choice, void *ctx)
 static void connect_task(void *arg)
 {
     esp_err_t err = bluetooth_connect((int)(intptr_t)arg);
-    if (err != ESP_OK && config_bt() && !scan_discover && scan_task != NULL) {
+    if (scan_task == NULL) {
+        vTaskDelete(NULL);
+        return;
+    }
+    if (want_discover) {
+        scan_discover = true;
+        scan_only = false;
+        xTaskNotifyGive(scan_task);
+    } else if (err != ESP_OK && config_bt() && !scan_discover) {
         scan_only = true;
         xTaskNotifyGive(scan_task);
     }
@@ -875,10 +920,20 @@ static int reconnect_index(void)
     return -1;
 }
 
+static bool link_is_up(void);
+
 static void finish_scan(void)
 {
     scanning = false;
     if (!scan_discover) {
+        if (want_discover && scan_task != NULL) {
+            scan_discover = true;
+            scan_only = false;
+            want_discover = false;
+            device_count = 0;
+            xTaskNotifyGive(scan_task);
+            return;
+        }
         int index = reconnect_index();
         if (index < 0) {
             if (config_bt() && scan_task != NULL) {
@@ -901,11 +956,36 @@ static void finish_scan(void)
 
     if (device_count == 0) {
         trace_print("no input device");
+        if (config_bt() && scan_task != NULL && !link_is_up()) {
+            scan_only = true;
+            xTaskNotifyGive(scan_task);
+        }
         return;
     }
     if (button_choice_start(device_count, pick_device, draw_device_page, NULL) != ESP_OK) {
         trace_print("connect <n>");
     }
+}
+
+static void on_scan_done(void)
+{
+    if (!gap_scanning && !scanning) {
+        return;
+    }
+    gap_scanning = false;
+    if (abandon_scan) {
+        abandon_scan = false;
+        scanning = false;
+        device_count = 0;
+        reconnect_stop = false;
+        if (want_discover && scan_task != NULL) {
+            scan_discover = true;
+            scan_only = false;
+            xTaskNotifyGive(scan_task);
+        }
+        return;
+    }
+    finish_scan();
 }
 
 static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
@@ -915,9 +995,19 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
         params_ready = true;
         if (want_scan) {
             want_scan = false;
+            if (want_discover) {
+                scan_discover = true;
+                scan_only = false;
+                want_discover = false;
+                device_count = 0;
+                reconnect_stop = false;
+            }
             if (esp_ble_gap_start_scanning(SCAN_SECONDS) != ESP_OK) {
                 scanning = false;
+                gap_scanning = false;
                 trace_print("scan failed");
+            } else {
+                gap_scanning = true;
             }
         }
         break;
@@ -931,8 +1021,11 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
         if (param->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_RES_EVT) {
             show_device(param);
         } else if (param->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_CMPL_EVT) {
-            finish_scan();
+            on_scan_done();
         }
+        break;
+    case ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT:
+        on_scan_done();
         break;
     case ESP_GAP_BLE_SEC_REQ_EVT:
         esp_ble_gap_security_rsp(param->ble_security.ble_req.bd_addr, true);
@@ -1080,14 +1173,24 @@ static void run_scan(void)
     load_known();
     scanning = true;
 
-    /* Reconnect ads often omit HID UUID. Try the last working address first, then scan. */
-    if (!scan_discover && !scan_only) {
+    if (!scan_discover && !scan_only && !want_discover) {
         if (try_direct_reconnect()) {
             scanning = false;
-            return;
+            if (!want_discover) {
+                return;
+            }
+            scanning = true;
+        } else {
+            device_count = 0;
+            trace_print("reconnect");
         }
+    }
+    if (want_discover) {
+        scan_discover = true;
+        scan_only = false;
+        want_discover = false;
         device_count = 0;
-        trace_print("reconnect");
+        reconnect_stop = false;
     }
     scan_only = false;
 
@@ -1096,14 +1199,18 @@ static void run_scan(void)
         want_scan = true;
         if (esp_ble_gap_set_scan_params(&scan_params) != ESP_OK) {
             scanning = false;
+            gap_scanning = false;
             trace_print("scan failed");
         }
         return;
     }
     if (esp_ble_gap_start_scanning(SCAN_SECONDS) != ESP_OK) {
         scanning = false;
+        gap_scanning = false;
         trace_print("scan failed");
+        return;
     }
+    gap_scanning = true;
 }
 
 static bool link_is_up(void);
@@ -1113,11 +1220,18 @@ static void scan_task_fn(void *arg)
     (void)arg;
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        if (scan_only) {
-            vTaskDelay(pdMS_TO_TICKS(2000));
+        if (scan_only && !want_discover) {
+            for (int i = 0; i < 10 && !want_discover; i++) {
+                vTaskDelay(pdMS_TO_TICKS(200));
+            }
             ulTaskNotifyTake(pdTRUE, 0);
+        }
+        if (want_discover) {
+            scan_discover = true;
+            scan_only = false;
+        } else if (scan_only) {
+            scan_only = false;
             if (!scan_discover && (!config_bt() || link_is_up())) {
-                scan_only = false;
                 continue;
             }
         }
@@ -1128,22 +1242,37 @@ static void scan_task_fn(void *arg)
 static esp_err_t start_scan(bool discover)
 {
     button_choice_stop();
-    if (scanning) {
-        trace_print("scanning");
-        return ESP_OK;
-    }
     if (scan_task == NULL) {
         if (xTaskCreate(scan_task_fn, "bt-scan", 16384, NULL, 5, &scan_task) != pdPASS) {
             trace_print("bt init failed");
             return ESP_ERR_NO_MEM;
         }
     }
-    scan_discover = discover;
     if (discover) {
+        want_discover = true;
         scan_only = false;
+        wait_said = false;
+        trace_print("discover");
+        if (gap_scanning) {
+            abandon_scan = true;
+            esp_ble_gap_stop_scanning();
+            return ESP_OK;
+        }
+        if (!scanning) {
+            scan_discover = true;
+            want_discover = false;
+            scanning = true;
+            xTaskNotifyGive(scan_task);
+        }
+        return ESP_OK;
     }
+    if (scanning || gap_scanning) {
+        trace_print("scanning");
+        return ESP_OK;
+    }
+    scan_discover = false;
     scanning = true;
-    trace_print(discover ? "discover" : "reconnect");
+    trace_print("reconnect");
     xTaskNotifyGive(scan_task);
     return ESP_OK;
 }

@@ -44,11 +44,24 @@ void lcd_text_clear(bool history);
 esp_err_t lcd_text_set_draft(const char *text);
 void lcd_text_dismiss_draft(void);
 
+/* The draft row becomes a finished row. The next append starts under it. */
+bool lcd_text_commit_draft(void);
+
 /* Change glyph color and redraw the rows already on screen. color is RGB565. */
 esp_err_t lcd_text_set_fg_color(uint16_t color);
 
 /* Redraw the rows already stored, using the current font. */
 void lcd_text_redraw(void);
+
+/* True while pixels or the camera covers the screen. Text paints wait. */
+bool lcd_text_pixels_holding(void);
+/* Cover the text. The next release redraws it. */
+void lcd_text_hold_screen(void);
+/* Restore the text screen. The key that ends the cover is not typed. */
+void lcd_text_pixels_release(void);
+
+/* Draw an RGB565 rectangle. w * h * 2 must fit one text-row DMA. */
+esp_err_t lcd_text_blit(int x, int y, int w, int h, const uint16_t *pixels);
 
 /* Draw the boot picture, one row every 500 ms, through trace. */
 esp_err_t lcd_text_show_splash(void);

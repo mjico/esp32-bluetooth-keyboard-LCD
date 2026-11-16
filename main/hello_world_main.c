@@ -1,8 +1,6 @@
-#include <stdio.h>
-#include <string.h>
-
 #include "esp_system.h"
 #include "bluetooth.h"
+#include "camera.h"
 #include "button.h"
 #include "command_interpreter.h"
 #include "config.h"
@@ -57,12 +55,7 @@ static void on_key_splash(void)
 
 static void on_debug_line(const char *line, void *ctx)
 {
-    char shown[130];
     (void)ctx;
-    if (trace_screen_enabled()) {
-        snprintf(shown, sizeof(shown), ">%.*s", 127, line != NULL ? line : "");
-        trace_print_screen(shown);
-    }
     command_line_execute(line);
 }
 
@@ -70,6 +63,7 @@ void app_main(void)
 {
     command_init();
     lcd_text_register_commands();
+    camera_register_commands();
     trace_register_commands();
     bluetooth_register_commands();
     i2c_register_commands();
