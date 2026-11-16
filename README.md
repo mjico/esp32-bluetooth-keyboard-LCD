@@ -9,10 +9,10 @@ ESP32-S3 开发板固件：320×240 屏幕当终端，USB 串口和蓝牙键盘�
 ## 能做什么
 
 - 屏幕终端：8×16 ASCII，40 列 × 15 行。满屏后继续往上滚，滚出的行留在页缓存里。默认 3 页，`system page` 可改成 2–10。
-- USB 串口行编辑：本地回显、`>` 提示符、上翻历史。Page Up / Page Down 翻屏幕页。
-- 蓝牙 HID 键盘：逐键回显，Enter 才提交。主键盘标点和小键盘数字、`/ * - + .` 都有映射。和串口共用同一套命令和 8 条历史。Num Lock 打开后小键盘数字才有效。
+- USB 串口与蓝牙键盘共用输入草稿：逐键改同一行，Enter 才提交。主键盘标点和小键盘数字、`/ * - + .` 都有映射。历史 8 条。Num Lock 打开后小键盘数字才有效。Page Up / Page Down 翻屏幕页。
 - 命令由各模块自己注册。`help` 列出关键字和一行说明。
-- `trace screen` / `trace serial` 两个开关互不影响，分别控制屏幕和串口输出。
+- 字符输出统一走 `trace`（`trace_draft` / `trace_commit` / `trace_print` / `trace_row`）。`trace screen` / `trace serial` 分别控制屏幕和串口。
+- `camera` 预览 240×240；任意键退出。`camera probe` 扫 SCCB，`camled` 开关补光。
 - 板载 KEY1–KEY4：改字色、开机画面、短按回连、长按发现、串口输出开关。
 - 开机画面有两张 ASCII 画，上电和 `splash` / KEY4 时随机选一张，输出走 `trace`。
 - ST7789 面板句柄只留在 `lcd_text`。命令、按键、蓝牙不再传递 `esp_lcd_panel_handle_t`。
@@ -63,6 +63,9 @@ ESP32-S3 开发板固件：320×240 屏幕当终端，USB 串口和蓝牙键盘�
 | `trace screen` / `trace serial` | 只看这一路是 0 还是 1 |
 | `trace screen 1` / `trace screen 0` | 打开或关闭屏幕输出 |
 | `trace serial 1` / `trace serial 0` | 打开或关闭串口输出 |
+| `camera` | 240×240 预览。画面起来后任意键退出 |
+| `camera probe` | 打开 XCLK/SCCB，列出应答地址 |
+| `camled 0\|1` | 摄像头补光 |
 | `connect <n>` | 连接上一次扫描列表里的第 n 台设备，从 1 计 |
 | `i2c` 或 `i2c scan` | 扫描 0x08–0x77，列出有应答的地址 |
 | `i2c read <addr> <reg> [n]` | 读寄存器，n 默认 1，最多 16。地址和字节可用十进制或 `0x` |
@@ -97,6 +100,7 @@ ESP32-S3 开发板固件：320×240 屏幕当终端，USB 串口和蓝牙键盘�
 | I2C | 先试 GPIO4/5，再试 GPIO38/48。找到 XL9555（常见 0x20）后只保留那一路。本板是 GPIO38/48，5 个扩展座、背光、按键在这一路。GPIO4/5 上的触摸、音频和 EEPROM 当前固件没有保持打开 |
 | 超声波 | 扩展座，地址 `0x77`。先读寄存器 1，再读寄存器 0 |
 | 点阵 | 扩展座，地址 `0x4C`。亮度寄存器 `0x00`，静态画面 `0x01`（16 字节），滚动 `0x10` |
+| 摄像头 | DVP；预览时占用与 `gpio` 实验相同的脚，做 gpio 实验前拔掉摄像头 |
 | 烧录和调试口 | 原生 USB（USB Serial/JTAG）。本机端口是 **COM8** |
 | 另一路 USB | CH340。只能当普通串口，不能用来下载 |
 
@@ -147,10 +151,11 @@ idf.py -p COM8 build flash
 ```
 main/hello_world_main.c    上电：载入配置、射频域复位、I2C、背光、lcd_text_start、按键、按 bt 回连
 main/lcd_text.c            ST7789、字符终端、页缓存、随机开机画面、splash
-main/debug_port.c          USB 串口行编辑，Page Up / Page Down 翻页
+main/debug_port.c          USB 串口行编辑；回显走 trace
 main/command_interpreter.* 命令注册、help、历史提交
 main/command_history.*     8 条命令历史
-main/trace.c               屏幕/串口两个输出开关
+main/trace.c               统一字符输出；screen/serial 开关
+main/camera.c              摄像头预览、probe、补光
 main/button.*              按键掩码、短按、长按、选择会话
 main/bluetooth.c           HID 扫描、配对、回连、断开后等待、键盘行
 main/i2c.*                 共享 I2C、背光和 i2c 命令
